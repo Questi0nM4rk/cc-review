@@ -10,11 +10,12 @@ alwaysApply: true
 
 | File | Read When |
 |------|-----------|
+| `references/github-review-api.md` | **ALWAYS** — read this before posting ANY review |
 | `references/csharp-patterns.md` | PR contains `.cs`, `.csproj`, `.sln` files |
 | `references/typescript-patterns.md` | PR contains `.ts`, `.tsx`, `.js`, `.jsx` files |
 | `references/python-patterns.md` | PR contains `.py` files |
 
-Load only the references matching the PR's languages. Do not load all three.
+**You MUST read `references/github-review-api.md` before Step 6 of every review.** It explains exactly how to map findings to inline diff comments. Load language references only for the PR's languages.
 
 ## Review Iron Laws
 
@@ -23,7 +24,7 @@ Load only the references matching the PR's languages. Do not load all three.
 3. **Every finding needs a failure scenario** — "When X happens, Y breaks because..."
 4. **Verify before reporting** — Read surrounding code, check if issue is handled elsewhere
 5. **No false positives from config** — Check `.cc-review.yaml` `known_patterns` and project memory
-6. **Comments need valid diff lines** — If a finding can't map to an exact line in the diff, describe it in the review `body` instead. NEVER put a comment with `line: null` or a line that doesn't exist in the diff.
+6. **Inline comments are the default** — Every finding that references a specific line in the diff MUST be an inline comment with `path`, `line`, and `side: "RIGHT"`. The `line` is the **file line number** from the `+` side of the `@@` hunk header. Read `references/github-review-api.md` for the exact algorithm. Only findings about missing code, cross-file issues, or lines outside all diff hunks go in the review `body` under `### Outside Diff`.
 7. **All findings or none** — If you found 3 issues, ALL 3 must appear in the review. Not 1 inline + 2 dropped.
 
 ## Review Decision

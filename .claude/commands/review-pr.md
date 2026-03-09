@@ -78,44 +78,62 @@ Apply `.cc-review.yaml` overrides:
 
 ## Step 6: Post the Review
 
+**First**: Read `.claude/skills/review-guidelines/references/github-review-api.md` for the exact API format and line-number algorithm.
+
 CRITICAL: Post exactly ONE review using a SINGLE `gh api` call. ALL findings go in this ONE call.
+
+### Mapping findings to inline comments
+
+For EACH finding, determine if it can be an inline comment:
+
+1. Search the diff (from `/tmp/pr-diff.txt` or `gh pr diff`) for the file
+2. Find the `@@` hunk that covers the line you want to comment on
+3. Parse the hunk header `@@ -OLD,COUNT +NEW,COUNT @@`:
+   - The `+NEW` number is where new-file line counting starts
+   - Count down through the hunk: `+` lines and context lines increment the new-file counter, `-` lines do NOT
+4. If your finding's line is a `+` or context line in a hunk → it's an inline comment:
+   ```json
+   {"path": "src/file.ts", "line": 42, "side": "RIGHT", "body": "Issue description."}
+   ```
+5. If the line is NOT in any diff hunk → it goes in the review body under `### Outside Diff`
 
 ### Building the payload
 
-1. Collect ALL findings from Step 5 into a flat list — no severity labels, no ranking
-2. For each finding that maps to a specific line in the diff:
-   - Verify the line exists in the diff output (NEW file side, the `+` lines)
-   - Add to `comments` array with `path`, `line`, `body`
-   - The `body` is just the issue description + fix suggestion — no "Bug (MED):" prefix
-3. For findings that CANNOT map to a valid diff line (e.g. missing functionality, cross-file issues, or lines you can't verify):
-   - Put them in the review `body` as bullet points — NOT as inline comments
-   - NEVER use `line: null` — that creates broken separate comments
+1. Collect ALL findings — no severity labels, no ranking
+2. **Inline findings** (line exists in diff): add to `comments` array with `path`, `line`, `side: "RIGHT"`, `body`
+3. **Outside-diff findings** (missing code, cross-file, line not in any hunk): add to `body` under `### Outside Diff` as bullet points
 4. If any findings exist → `"event": "REQUEST_CHANGES"`. If zero → `"event": "APPROVE"`
 
 ### Payload format
 
 ```json
 {
-  "body": "Summary of findings.\n\n- Finding without a diff line: description here",
+  "body": "Summary.\n\n### Outside Diff\n\n- **`src/other.ts`**: Cross-file issue description.",
   "event": "REQUEST_CHANGES",
   "comments": [
-    {"path": "src/file.ts", "line": 42, "body": "Issue description and suggested fix."}
+    {"path": "src/file.ts", "line": 42, "side": "RIGHT", "body": "Issue on this line. Fix: ..."}
   ]
 }
 ```
 
+If ALL findings are inline, the body is just a one-line summary (no `### Outside Diff` section needed).
+
 ### Submit
 
 ```bash
+cat > /tmp/review-payload.json <<'PAYLOAD_EOF'
+<your JSON here>
+PAYLOAD_EOF
 gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
 ```
 
 ### Verification before submitting
 
-- Count findings in your list. Count comments in the JSON. Count body bullet points. They MUST add up.
-- Every `line` value must be a real line number from the diff. If unsure, put it in the body.
-- Every `path` must match the diff exactly.
-- The `body` should list any findings that aren't inline. If all findings are inline, body is just a short summary.
+- Every `line` value → check it exists as a `+` or context line in the diff for that file
+- Every `path` → must match `diff --git a/PATH b/PATH` exactly
+- Every comment has `"side": "RIGHT"` (unless commenting on a removed line)
+- No comment has `line: null` — those MUST be in the body
+- Finding count: inline comments + body bullet points = total findings. Nothing dropped.
 
 ## Step 7: STOP
 
