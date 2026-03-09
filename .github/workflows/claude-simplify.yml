@@ -75,7 +75,7 @@ jobs:
           )
 
           claude -p \
-            --max-turns 15 \
+            --max-turns 30 \
             --model claude-sonnet-4-6 \
             --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent" \
             "$PROMPT"
