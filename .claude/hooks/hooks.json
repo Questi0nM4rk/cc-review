@@ -5,13 +5,13 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash .claude/hooks/scripts/block-pr-review.sh",
-          "timeout": 5
+          "command": "npx tsx .claude/hooks/scripts/block-pr-review.ts",
+          "timeout": 10
         },
         {
           "type": "command",
-          "command": "bash .claude/hooks/scripts/fix-review-payload.sh",
-          "timeout": 5
+          "command": "npx tsx .claude/hooks/scripts/fix-review-payload.ts",
+          "timeout": 10
         }
       ]
     }
