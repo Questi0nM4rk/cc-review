@@ -87,6 +87,30 @@ jobs:
             fi
           fi
 
+      - name: Pre-fetch PR diff
+        if: steps.config.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          PR_NUMBER="${{ steps.config.outputs.pr_number }}"
+          # Get PR metadata
+          gh pr view "$PR_NUMBER" --json title,body,author,baseRefName,headRefName,files > /tmp/pr-meta.json
+
+          # Try gh pr diff first, fallback to local git diff for large PRs
+          if ! gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt 2>/dev/null; then
+            echo "PR diff too large for API, using local git diff..."
+            BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json)
+            HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
+            git fetch origin "$HEAD" 2>/dev/null || true
+            git diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || \
+              git diff "origin/$BASE...FETCH_HEAD" > /tmp/pr-diff.txt 2>/dev/null || \
+              echo "Could not compute diff" > /tmp/pr-diff.txt
+          fi
+
+          DIFF_LINES=$(wc -l < /tmp/pr-diff.txt)
+          FILE_COUNT=$(jq '.files | length' /tmp/pr-meta.json)
+          echo "Diff: ${DIFF_LINES} lines, ${FILE_COUNT} files"
+
       - name: Install Claude Code
         if: steps.config.outputs.skip != 'true'
         run: |
@@ -124,11 +148,17 @@ jobs:
           esac
 
           cat > /tmp/prompt.txt <<EOF
-          You are the cc-review bot for ${REPO}.
-          Review PR #${PR_NUMBER} using the ${COMMAND} command (.claude/commands/${COMMAND}.md).
+          You are the cc-review bot for ${REPO}, reviewing PR #${PR_NUMBER}.
+          Follow .claude/commands/${COMMAND}.md for the review methodology.
+          The .cc-review.yaml has project-specific config.
 
-          Read .claude/CLAUDE.md first for your identity and rules.
-          Read .cc-review.yaml for project-specific configuration.
+          IMPORTANT: The PR diff and metadata are pre-fetched for you:
+          - /tmp/pr-meta.json — PR title, body, author, files list
+          - /tmp/pr-diff.txt — the full diff
+
+          Read these files instead of calling gh pr view/diff. This saves turns.
+          Do NOT call gh pr diff — it may fail on large PRs. Use /tmp/pr-diff.txt.
+
           The PR number is: ${PR_NUMBER}
           ${EXTRA}
           EOF

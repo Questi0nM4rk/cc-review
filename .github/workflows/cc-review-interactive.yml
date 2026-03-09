@@ -74,6 +74,25 @@ jobs:
             --jq '.id')
           echo "comment_id=$COMMENT_ID" >> "$GITHUB_OUTPUT"
 
+      - name: Pre-fetch PR diff
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          PR_NUMBER="${{ steps.extract.outputs.pr_number }}"
+          gh pr view "$PR_NUMBER" --json title,body,author,baseRefName,headRefName,files > /tmp/pr-meta.json
+
+          if ! gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt 2>/dev/null; then
+            echo "PR diff too large for API, using local git diff..."
+            BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json)
+            HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
+            git fetch origin "$HEAD" 2>/dev/null || true
+            git diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || \
+              git diff "origin/$BASE...FETCH_HEAD" > /tmp/pr-diff.txt 2>/dev/null || \
+              echo "Could not compute diff" > /tmp/pr-diff.txt
+          fi
+
+          echo "Diff: $(wc -l < /tmp/pr-diff.txt) lines, $(jq '.files | length' /tmp/pr-meta.json) files"
+
       - name: Install Claude Code
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
@@ -95,10 +114,13 @@ jobs:
 
           cat > /tmp/prompt.txt <<EOF
           You are the cc-review bot for ${REPO}, working on PR #${PR_NUMBER}.
+          The .cc-review.yaml has project-specific config.
 
-          Read .claude/CLAUDE.md first for your identity and rules.
-          Read .cc-review.yaml for project-specific configuration.
-          The PR number is: ${PR_NUMBER}
+          IMPORTANT: The PR diff and metadata are pre-fetched for you:
+          - /tmp/pr-meta.json — PR title, body, author, files list
+          - /tmp/pr-diff.txt — the full diff
+          Read these files instead of calling gh pr view/diff. This saves turns.
+          Do NOT call gh pr diff — it may fail on large PRs. Use /tmp/pr-diff.txt.
 
           User Message: ${USER_MSG}
 

@@ -18,9 +18,22 @@ Store both the memory and config. Use them throughout the review.
 
 ## Step 1: Gather PR
 
+If pre-fetched files exist (CI environment), use them:
+```bash
+cat /tmp/pr-meta.json 2>/dev/null && cat /tmp/pr-diff.txt 2>/dev/null
+```
+
+Otherwise (local/manual), fetch directly:
 ```bash
 gh pr view $ARGUMENTS --json title,body,author,baseRefName,headRefName,files
 gh pr diff $ARGUMENTS
+```
+
+If `gh pr diff` fails with 406 "too large", use local git diff:
+```bash
+BASE=$(gh pr view $ARGUMENTS --json baseRefName --jq '.baseRefName')
+HEAD=$(gh pr view $ARGUMENTS --json headRefName --jq '.headRefName')
+git diff origin/$BASE...origin/$HEAD
 ```
 
 ## Step 2: Triage
