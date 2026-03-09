@@ -1,12 +1,12 @@
 name: Claude Strict Review
 
-# Alternative workflow that uses the strict-review plugin from the marketplace.
+# Alternative workflow that uses strict review rules.
 # Every finding is a required change — no severity levels, no nitpicks.
 # To use this instead of claude-review.yml, rename or delete the other file.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened]
 
 jobs:
   strict-review:
@@ -35,17 +35,40 @@ jobs:
           app-id: ${{ secrets.REVIEWER_APP_ID }}
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Run Claude Code strict review
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.app-token.outputs.token }}
-          # If using a private marketplace repo, include PAT in the URL:
-          # plugin_marketplaces: "https://${{ secrets.GH_PAT }}@github.com/your-org/qsm-marketplace.git"
-          plugin_marketplaces: "https://github.com/your-org/qsm-marketplace.git"
-          plugins: "strict-review@qsm-marketplace"
-          prompt: "/strict-review ${{ github.event.pull_request.number }}"
-          claude_args: >-
-            --max-turns 15
-            --model claude-sonnet-4-6
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh api:*),Bash(npx tsx:*),Bash(git show:*),Bash(git fetch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rev-parse:*),Bash(git reset:*),Read,Glob,Grep,Agent"
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          PROMPT=$(cat <<ENDOFPROMPT
+          You are a strict code review bot for the repository ${{ github.repository }}.
+          Review PR #${PR_NUMBER} with zero tolerance — every finding is a required change.
+
+          Follow the instructions in .claude/commands/review-pr.md (read it first).
+          The PR number to use is: ${PR_NUMBER}
+
+          STRICT RULES:
+          - No severity levels. Every finding = required change.
+          - No dead code, no duplicates, modular approach required.
+          - All comments are inline requested changes.
+          - Issues outside the current diff go in the review body as required changes.
+          - If ANY issue is found, use --request-changes. Never approve with issues.
+
+          Use \`gh pr diff ${PR_NUMBER}\` and \`gh pr view ${PR_NUMBER}\` to get the PR context.
+          Post your review using \`gh pr review ${PR_NUMBER}\` with --approve or --request-changes.
+          ENDOFPROMPT
+          )
+
+          claude -p \
+            --max-turns 15 \
+            --model claude-sonnet-4-6 \
+            --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent" \
+            "$PROMPT"
