@@ -62,12 +62,18 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ steps.extract.outputs.pr_number }}"
+          REPO="${{ github.repository }}"
 
-          claude -p \
+          cat > /tmp/prompt.txt <<EOF
+          You are a code review bot for ${REPO}. Review PR #${PR_NUMBER}.
+          Read .claude/commands/review-pr.md first, then follow those instructions.
+          The PR number is ${PR_NUMBER}.
+          EOF
+
+          cat /tmp/prompt.txt | claude -p \
             --max-turns 30 \
             --model claude-sonnet-4-6 \
-            --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent" \
-            "You are a code review bot for ${{ github.repository }}. Review PR #${PR_NUMBER}. Read .claude/commands/review-pr.md first, then follow those instructions. The PR number is ${PR_NUMBER}."
+            --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent"
 
       - name: Update comment with result
         if: always()

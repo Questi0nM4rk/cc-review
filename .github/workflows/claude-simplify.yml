@@ -61,9 +61,10 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ steps.pr.outputs.number }}"
+          REPO="${{ github.repository }}"
 
-          PROMPT=$(cat <<ENDOFPROMPT
-          You are a code review bot for the repository ${{ github.repository }}.
+          cat > /tmp/prompt.txt <<EOF
+          You are a code review bot for the repository ${REPO}.
           Perform a simplification review on PR #${PR_NUMBER}.
 
           Follow the instructions in .claude/commands/simplify-review.md (read it first).
@@ -71,11 +72,9 @@ jobs:
 
           Use \`gh pr diff ${PR_NUMBER}\` and \`gh pr view ${PR_NUMBER}\` to get the PR context.
           Post your review using \`gh pr review ${PR_NUMBER}\` with --approve or --request-changes.
-          ENDOFPROMPT
-          )
+          EOF
 
-          claude -p \
+          cat /tmp/prompt.txt | claude -p \
             --max-turns 30 \
             --model claude-sonnet-4-6 \
-            --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent" \
-            "$PROMPT"
+            --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent"

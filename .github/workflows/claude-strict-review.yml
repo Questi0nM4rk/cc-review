@@ -47,9 +47,10 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
 
-          PROMPT=$(cat <<ENDOFPROMPT
-          You are a strict code review bot for the repository ${{ github.repository }}.
+          cat > /tmp/prompt.txt <<EOF
+          You are a strict code review bot for the repository ${REPO}.
           Review PR #${PR_NUMBER} with zero tolerance — every finding is a required change.
 
           Follow the instructions in .claude/commands/review-pr.md (read it first).
@@ -64,11 +65,9 @@ jobs:
 
           Use \`gh pr diff ${PR_NUMBER}\` and \`gh pr view ${PR_NUMBER}\` to get the PR context.
           Post your review using \`gh pr review ${PR_NUMBER}\` with --approve or --request-changes.
-          ENDOFPROMPT
-          )
+          EOF
 
-          claude -p \
+          cat /tmp/prompt.txt | claude -p \
             --max-turns 30 \
             --model claude-sonnet-4-6 \
-            --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent" \
-            "$PROMPT"
+            --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent"
