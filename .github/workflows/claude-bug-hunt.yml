@@ -1,0 +1,61 @@
+name: Claude Bug Hunt
+
+# Deep bug-hunting review — trigger manually or via PR label.
+# Focuses on logic errors, edge cases, and integration bugs.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to bug-hunt"
+        required: true
+
+jobs:
+  bug-hunt:
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.label.name == 'bug-hunt')
+    timeout-minutes: 20
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch memory branch
+        run: git fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null || true
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+
+      - name: Determine PR number
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ github.event.inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude Code bug hunt
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          prompt: "/bug-hunt ${{ steps.pr.outputs.number }}"
+          claude_args: >-
+            --max-turns 15
+            --model claude-sonnet-4-6
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh api:*),Bash(git show:*),Bash(git fetch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rev-parse:*),Bash(git reset:*),Read,Glob,Grep,Agent"

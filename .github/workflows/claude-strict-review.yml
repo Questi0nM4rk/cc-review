@@ -1,0 +1,51 @@
+name: Claude Strict Review
+
+# Alternative workflow that uses the strict-review plugin from the marketplace.
+# Every finding is a required change — no severity levels, no nitpicks.
+# To use this instead of claude-review.yml, rename or delete the other file.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  strict-review:
+    runs-on: ubuntu-latest
+    if: >-
+      !contains(github.event.pull_request.user.login, '[bot]')
+    timeout-minutes: 20
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch memory branch
+        run: git fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null || true
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+
+      - name: Run Claude Code strict review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          # If using a private marketplace repo, include PAT in the URL:
+          # plugin_marketplaces: "https://${{ secrets.GH_PAT }}@github.com/your-org/qsm-marketplace.git"
+          plugin_marketplaces: "https://github.com/your-org/qsm-marketplace.git"
+          plugins: "strict-review@qsm-marketplace"
+          prompt: "/strict-review ${{ github.event.pull_request.number }}"
+          claude_args: >-
+            --max-turns 15
+            --model claude-sonnet-4-6
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh api:*),Bash(npx tsx:*),Bash(git show:*),Bash(git fetch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rev-parse:*),Bash(git reset:*),Read,Glob,Grep,Agent"
