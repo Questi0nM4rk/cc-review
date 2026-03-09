@@ -28,7 +28,8 @@ gh pr diff $ARGUMENTS
 
 If the diff is trivial (version bumps, config-only changes, dependency updates, markdown edits), approve immediately and skip remaining steps:
 ```bash
-gh pr review $ARGUMENTS --approve --body "LGTM — trivial change, no review needed."
+echo '{"body":"LGTM — trivial change, no review needed.","event":"APPROVE","comments":[]}' > /tmp/review-payload.json
+gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
 ```
 
 ## Step 3: Slop Research
@@ -68,25 +69,65 @@ For each file changed, check for:
 
 ## Step 6: Post the Review
 
-Based on your findings:
+CRITICAL: Post exactly ONE review using a SINGLE `gh api` call. All inline comments MUST be inside the review — never post comments separately.
 
-**If no must-fix issues found:**
+Build a JSON payload and submit it in one call:
+
 ```bash
-gh pr review $ARGUMENTS --approve --body "LGTM — reviewed for bugs, security, and logic issues. No problems found."
+gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews \
+  --method POST \
+  --input /tmp/review-payload.json
 ```
 
-**If only nice-to-have suggestions:**
-```bash
-gh pr review $ARGUMENTS --approve --body "Approved with minor suggestions (see inline comments)."
+The JSON payload must follow this structure:
+
+```json
+{
+  "body": "Review summary here",
+  "event": "APPROVE or REQUEST_CHANGES",
+  "comments": [
+    {
+      "path": "src/file.ts",
+      "line": 42,
+      "body": "Description of the issue and suggested fix."
+    }
+  ]
+}
+```
+
+### How to build the payload:
+
+1. Collect ALL findings from Step 5 into a list
+2. For each finding that maps to a specific line in the diff, create a comment object with `path`, `line`, and `body`
+3. For findings that don't map to a specific diff line (e.g. missing functionality, architectural issues), mention them in the review `body` instead
+4. Set `event` to `"APPROVE"` if no must-fix issues, `"REQUEST_CHANGES"` if any must-fix issues exist
+5. Write the JSON to `/tmp/review-payload.json` then submit with `gh api`
+
+**Important rules for the comments array:**
+- The `line` must be a line number that exists in the diff (the NEW file side)
+- The `path` must match exactly the file path shown in the diff
+- If you cannot determine the exact line, put the finding in the review `body` instead
+- Use `side: "RIGHT"` if needed (defaults to RIGHT which is correct for new code)
+
+**If no issues found (approve):**
+```json
+{
+  "body": "LGTM — reviewed for bugs, security, and logic issues. No problems found.",
+  "event": "APPROVE",
+  "comments": []
+}
 ```
 
 **If must-fix issues found:**
-```bash
-gh pr review $ARGUMENTS --request-changes --body "Found issues that should be addressed before merging:
-
-- [list each issue concisely]
-
-See inline comments for details."
+```json
+{
+  "body": "Found issues that should be addressed before merging:\n\n- Issue 1 summary\n- Issue 2 summary",
+  "event": "REQUEST_CHANGES",
+  "comments": [
+    {"path": "src/config.ts", "line": 14, "body": "Detailed explanation of issue 1."},
+    {"path": "src/utils.ts", "line": 28, "body": "Detailed explanation of issue 2."}
+  ]
+}
 ```
 
 ## Step 7: Update Memory
@@ -100,7 +141,8 @@ Evaluate what you learned from this review:
 If you have new insights, update the memory on the `claude-reviewer/memory` branch. Merge new insights with existing content — don't overwrite. Keep it under 200 lines.
 
 ## Rules
-- Post exactly ONE review action (approve or request-changes), never both
-- Do not post separate PR comments — use the review body and inline review comments only
+- Post exactly ONE review via a SINGLE `gh api` call — never multiple calls
+- ALL inline comments MUST be inside the `comments` array of that single review — never use `gh pr review`, `gh pr comment`, or separate API calls for comments
+- Do not use `gh pr review` command at all — always use `gh api repos/{owner}/{repo}/pulls/NUMBER/reviews --method POST --input /tmp/review-payload.json`
 - Be concise — no filler, no preamble, no "great PR overall" padding
 - If the diff is trivial (version bumps, config changes, dependency updates), approve immediately
