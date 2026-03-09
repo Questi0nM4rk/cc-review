@@ -95,6 +95,7 @@ jobs:
 
       - name: Install Claude Code
         run: |
+          npm install -g tsx
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
