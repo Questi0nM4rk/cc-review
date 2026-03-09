@@ -35,9 +35,22 @@ jobs:
 
       - name: Extract user request
         id: extract
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           PR_NUMBER="${{ github.event.issue.number }}"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+          # Extract text after @cc-review
+          USER_MSG="${COMMENT_BODY#*@cc-review}"
+          USER_MSG="${USER_MSG## }"
+          if [ -z "$USER_MSG" ] || [ "$USER_MSG" = "$COMMENT_BODY" ]; then
+            USER_MSG="Review this PR for bugs, security, and logic issues."
+          fi
+          # Use delimiter for multiline output
+          echo "user_msg<<ENDOFMSG" >> "$GITHUB_OUTPUT"
+          echo "$USER_MSG" >> "$GITHUB_OUTPUT"
+          echo "ENDOFMSG" >> "$GITHUB_OUTPUT"
 
       - name: Post status comment
         id: init-comment
@@ -64,11 +77,19 @@ jobs:
         run: |
           PR_NUMBER="${{ steps.extract.outputs.pr_number }}"
           REPO="${{ github.repository }}"
+          USER_MSG=$(cat <<'ENDOFMSG'
+          ${{ steps.extract.outputs.user_msg }}
+          ENDOFMSG
+          )
 
           cat > /tmp/prompt.txt <<EOF
-          You are a code review bot for ${REPO}. Review PR #${PR_NUMBER}.
-          Read .claude/commands/review-pr.md first, then follow those instructions.
-          The PR number is ${PR_NUMBER}.
+          You are a code review bot for ${REPO}, working on PR #${PR_NUMBER}.
+          The user asked: ${USER_MSG}
+
+          Read .claude/CLAUDE.md and .claude/commands/review-pr.md for your instructions.
+          The PR number is ${PR_NUMBER}. Follow the user's request.
+          If the user just asked for a review, follow review-pr.md instructions.
+          If the user asked something else (list tools, explain findings, etc.), respond to that directly.
           EOF
 
           cat /tmp/prompt.txt | claude -p \
