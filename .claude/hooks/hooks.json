@@ -5,7 +5,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "npx tsx .claude/hooks/scripts/block-pr-review.ts",
+          "command": "bash .claude/hooks/scripts/block-pr-review.sh",
           "timeout": 5
         }
       ]
