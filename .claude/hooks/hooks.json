@@ -1,0 +1,14 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "npx tsx .claude/hooks/scripts/block-pr-review.ts",
+          "timeout": 5
+        }
+      ]
+    }
+  ]
+}

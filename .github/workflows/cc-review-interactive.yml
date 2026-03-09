@@ -1,0 +1,127 @@
+name: cc-review interactive (@cc-review mentions)
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    if: contains(github.event.comment.body, '@cc-review')
+    timeout-minutes: 15
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch bot intelligence
+        run: |
+          git clone --depth 1 https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
+          mkdir -p .claude
+          cp -r /tmp/cc-review-bot/.claude/commands .claude/
+          cp -r /tmp/cc-review-bot/.claude/agents .claude/
+          cp -r /tmp/cc-review-bot/.claude/skills .claude/
+          cp -r /tmp/cc-review-bot/.claude/hooks .claude/
+          cp /tmp/cc-review-bot/.claude/CLAUDE.md .claude/CLAUDE.md
+
+      - name: Fetch memory branch
+        run: git fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null || true
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+
+      - name: Extract user request
+        id: extract
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          PR_NUMBER="${{ github.event.issue.number }}"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+          USER_MSG="${COMMENT_BODY#*@cc-review}"
+          USER_MSG="${USER_MSG## }"
+          if [ -z "$USER_MSG" ] || [ "$USER_MSG" = "$COMMENT_BODY" ]; then
+            USER_MSG="Review this PR for bugs, security, and logic issues."
+          fi
+          echo "user_msg<<ENDOFMSG" >> "$GITHUB_OUTPUT"
+          echo "$USER_MSG" >> "$GITHUB_OUTPUT"
+          echo "ENDOFMSG" >> "$GITHUB_OUTPUT"
+
+      - name: Post status comment
+        id: init-comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          COMMENT_ID=$(gh api repos/${{ github.repository }}/issues/${{ steps.extract.outputs.pr_number }}/comments \
+            --method POST \
+            -f body="> **cc-review** is reviewing PR #${{ steps.extract.outputs.pr_number }}... :hourglass_flowing_sand:" \
+            --jq '.id')
+          echo "comment_id=$COMMENT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run Claude Code review
+        id: review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          PR_NUMBER="${{ steps.extract.outputs.pr_number }}"
+          REPO="${{ github.repository }}"
+          USER_MSG=$(cat <<'ENDOFMSG'
+          ${{ steps.extract.outputs.user_msg }}
+          ENDOFMSG
+          )
+
+          cat > /tmp/prompt.txt <<EOF
+          You are the cc-review bot for ${REPO}, working on PR #${PR_NUMBER}.
+
+          Read .claude/CLAUDE.md first for your identity and rules.
+          Read .cc-review.yaml for project-specific configuration.
+          The PR number is: ${PR_NUMBER}
+
+          User Message: ${USER_MSG}
+
+          If the user asked for a review (or just pinged without specifics), follow .claude/commands/review-pr.md.
+          If the user asked for a specific mode (bug-hunt, simplify, strict), follow that command.
+          If the user asked something else (list tools, explain, etc.), respond directly.
+          EOF
+
+          cat /tmp/prompt.txt | claude -p \
+            --max-turns 30 \
+            --model claude-sonnet-4-6 \
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Read,Glob,Grep,Agent"
+
+      - name: Update status comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          COMMENT_ID="${{ steps.init-comment.outputs.comment_id }}"
+          if [ -n "$COMMENT_ID" ]; then
+            if [ "${{ steps.review.outcome }}" = "success" ]; then
+              BODY="> **cc-review** finished reviewing PR #${{ steps.extract.outputs.pr_number }}. See review above."
+            else
+              BODY="> **cc-review** review of PR #${{ steps.extract.outputs.pr_number }} encountered an error. [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            fi
+            gh api repos/${{ github.repository }}/issues/comments/$COMMENT_ID \
+              --method PATCH \
+              -f body="$BODY" || true
+          fi
