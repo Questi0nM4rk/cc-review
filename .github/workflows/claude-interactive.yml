@@ -39,14 +39,14 @@ jobs:
           PR_NUMBER="${{ github.event.issue.number }}"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
-      - name: Post initial comment
+      - name: Post status comment
         id: init-comment
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           COMMENT_ID=$(gh api repos/${{ github.repository }}/issues/${{ steps.extract.outputs.pr_number }}/comments \
             --method POST \
-            -f body="**cc-review** is reviewing this PR..." \
+            -f body="> **cc-review** is reviewing PR #${{ steps.extract.outputs.pr_number }}... ⏳" \
             --jq '.id')
           echo "comment_id=$COMMENT_ID" >> "$GITHUB_OUTPUT"
 
@@ -56,6 +56,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run Claude Code review
+        id: review
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -75,14 +76,18 @@ jobs:
             --model claude-sonnet-4-6 \
             --allowedTools "Bash(gh:*),Bash(git:*),Read,Glob,Grep,Agent"
 
-      - name: Update comment with result
+      - name: Update status comment
         if: always()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           COMMENT_ID="${{ steps.init-comment.outputs.comment_id }}"
           if [ -n "$COMMENT_ID" ]; then
-            BODY="**cc-review** finished reviewing PR #${{ steps.extract.outputs.pr_number }}."
+            if [ "${{ steps.review.outcome }}" = "success" ]; then
+              BODY="> **cc-review** finished reviewing PR #${{ steps.extract.outputs.pr_number }}. See review above."
+            else
+              BODY="> **cc-review** review of PR #${{ steps.extract.outputs.pr_number }} encountered an error. [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            fi
             gh api repos/${{ github.repository }}/issues/comments/$COMMENT_ID \
               --method PATCH \
               -f body="$BODY" || true
