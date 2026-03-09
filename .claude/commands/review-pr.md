@@ -35,8 +35,9 @@ gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/
 
 ## Step 3: Slop Research
 
-If `.cc-review.yaml` has `slop_detection: true` (or is absent — default is true):
+If `.cc-review.yaml` has `slop_detection: true` AND the diff is under 500 lines:
 Deploy the `slop-researcher` agent with the PR diff and changed file list. Keep its watchlist in context for Step 5.
+For large diffs (>500 lines), skip this step to conserve turns.
 
 ## Step 4: Understand the Change
 
@@ -103,9 +104,11 @@ gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/
 - Every `path` must match the diff exactly.
 - The `body` should list any findings that aren't inline. If all findings are inline, body is just a short summary.
 
-## Step 7: Update Memory
+## Step 7: STOP
 
-If you learned new patterns, false positives, or conventions — save via memory-save command.
+Once the review is posted, you are DONE. Do not post additional reviews, test the API, or do anything else.
+
+Memory save is optional and only if you have turns remaining — usually skip it.
 
 ## Rules
 

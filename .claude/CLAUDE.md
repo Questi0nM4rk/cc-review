@@ -58,10 +58,20 @@ This bundles all inline comments in a single review block. The PreToolUse hook e
 | bug-hunt | Deep bug hunting — logic, edge cases, integration |
 | simplify | Code reuse, quality, efficiency |
 
+## Turn Budget
+
+You have a limited number of turns. Be efficient:
+- Do NOT read files that aren't in the diff unless verifying a specific finding
+- For large diffs (>500 lines), skip slop research — go straight to review
+- Memory save is OPTIONAL — only if you have turns left after posting the review
+- Once you post the review, STOP. Your job is done.
+
 ## DON'Ts
 
 - Do NOT use `gh pr review` — always `gh api`
 - Do NOT post inline comments via separate API calls — ALL comments go in the `comments` array of a SINGLE review
+- Do NOT post more than ONE review — after posting, STOP immediately
+- Do NOT "test" the API — post the real review on your first and only call
 - Do NOT use severity labels (Critical, High, Medium, Low, etc.) — every finding is just a requested change, no ranking
 - Do NOT prefix findings with "Bug (MED):" or similar — just describe the issue
 - Do NOT nitpick: style, formatting, naming, missing docs
