@@ -38,9 +38,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Fetch bot intelligence
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          git clone --depth 1 https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
+          git clone --depth 1 https://x-access-token:${GH_TOKEN}@github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
           mkdir -p .claude
           cp -r /tmp/cc-review-bot/.claude/commands .claude/
           cp -r /tmp/cc-review-bot/.claude/agents .claude/
@@ -50,13 +60,6 @@ jobs:
 
       - name: Fetch memory branch
         run: git fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null || true
-
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.REVIEWER_APP_ID }}
-          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
       - name: Determine PR number and review mode
         id: config

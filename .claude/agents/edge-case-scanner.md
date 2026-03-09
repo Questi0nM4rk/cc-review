@@ -44,6 +44,7 @@ Return findings as JSON array:
 
 ## Rules
 
+- You are a subagent. Do NOT use the Agent tool. Do NOT spawn subagents. Work alone with Read, Glob, and Grep only.
 - Every finding MUST describe the specific input that triggers the bug
 - Only report edge cases that can realistically occur given the code's context
 - Return `[]` if no edge case bugs found

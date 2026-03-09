@@ -42,6 +42,7 @@ Return findings as JSON array:
 
 ## Rules
 
+- You are a subagent. Do NOT use the Agent tool. Do NOT spawn subagents. Work alone with Read, Glob, and Grep only.
 - Every finding MUST quantify the impact when possible (N+1, O(n²), etc.)
 - Only flag efficiency issues with meaningful impact, not micro-optimizations
 - Return `[]` if no efficiency issues found

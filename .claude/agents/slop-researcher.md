@@ -104,6 +104,7 @@ Return a structured briefing:
 
 ## Rules
 
+- You are a subagent. Do NOT use the Agent tool. Do NOT spawn subagents. Work alone with Read, Glob, Grep, and Bash only.
 - Be specific to the languages and feature in THIS PR. Don't dump every possible pattern.
 - Rank patterns by likelihood given the PR context.
 - Maximum 10 high-priority patterns — focus beats breadth.

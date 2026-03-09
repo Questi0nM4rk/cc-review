@@ -42,6 +42,7 @@ Return findings as JSON array:
 
 ## Rules
 
+- You are a subagent. Do NOT use the Agent tool. Do NOT spawn subagents. Work alone with Read, Glob, and Grep only.
 - Every finding MUST identify both sides of the integration mismatch
 - Only report mismatches you can verify by reading both sides of the contract
 - Return `[]` if no integration bugs found

@@ -42,6 +42,7 @@ Return findings as JSON array:
 
 ## Rules
 
+- You are a subagent. Do NOT use the Agent tool. Do NOT spawn subagents. Work alone with Read, Glob, and Grep only.
 - Every finding MUST include a concrete suggestion for improvement
 - Only flag quality issues that meaningfully impact maintainability
 - Return `[]` if no quality issues found

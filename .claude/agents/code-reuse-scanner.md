@@ -39,6 +39,7 @@ Return findings as JSON array:
 
 ## Rules
 
+- You are a subagent. Do NOT use the Agent tool. Do NOT spawn subagents. Work alone with Read, Glob, and Grep only.
 - Every finding MUST name the specific existing function/utility to use instead
 - Only flag duplication when the existing code truly handles the same case
 - Return `[]` if no reuse opportunities found

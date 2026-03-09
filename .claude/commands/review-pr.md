@@ -44,7 +44,7 @@ Before reviewing line-by-line:
 - Read the PR title and description to understand intent
 - Identify which areas of the codebase are touched
 - Cross-reference with memory for known patterns in these areas
-- If the diff is large (>500 lines), use subagents to review different files in parallel
+- For large diffs (>500 lines), focus on the most critical files first, do NOT spawn subagents
 
 ## Step 5: Review the Changes
 

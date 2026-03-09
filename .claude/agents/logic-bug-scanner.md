@@ -44,6 +44,7 @@ Return findings as JSON array:
 
 ## Rules
 
+- You are a subagent. Do NOT use the Agent tool. Do NOT spawn subagents. Work alone with Read, Glob, and Grep only.
 - Every finding MUST describe the specific failure scenario: "When X happens, line Y fails because..."
 - Only report bugs you are confident about after verification
 - Return `[]` if no logic bugs found
