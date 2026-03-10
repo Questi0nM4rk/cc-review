@@ -317,10 +317,8 @@ async function main(): Promise<void> {
   // ── Store secrets ─────────────────────────────────────
   info("Storing secrets...");
 
-  runOrFail(`gh secret set REVIEWER_APP_ID --repo ${targetRepo} --body "${appId}"`);
-  runOrFail(`gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${targetRepo} --body "${oauthToken}"`);
-
-  // PEM goes via stdin (multiline, no temp file)
+  runOrFail(`gh secret set REVIEWER_APP_ID --repo ${targetRepo}`, { input: appId });
+  runOrFail(`gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${targetRepo}`, { input: oauthToken });
   runOrFail(`gh secret set REVIEWER_APP_PRIVATE_KEY --repo ${targetRepo}`, { input: pemKey });
 
   ok(`3 secrets stored on ${targetRepo}`);

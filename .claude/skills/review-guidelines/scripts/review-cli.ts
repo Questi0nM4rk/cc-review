@@ -149,6 +149,27 @@ function ghGraphQL(query: string, variables: Record<string, unknown> = {}): unkn
   }
 }
 
+/** Walk a nested object by dot-separated path, returning undefined if any segment is missing. */
+function dig(obj: unknown, path: string): unknown {
+  let current = obj;
+  for (const key of path.split(".")) {
+    if (current == null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+function assertGraphQL<T>(result: unknown, path: string, context: string): T {
+  const value = dig(result, path);
+  if (value === undefined || value === null) {
+    const errors = dig(result, "errors");
+    const detail = errors ? ` — ${JSON.stringify(errors)}` : "";
+    process.stderr.write(`[review-cli] ${context}: unexpected GraphQL response at '${path}'${detail}\n`);
+    process.exit(1);
+  }
+  return value as T;
+}
+
 function printUsage(): void {
   process.stderr.write(
     `Usage: tsx review-cli.ts <subcommand> --repo owner/repo --pr N [options]
@@ -340,23 +361,11 @@ function cmdApprove(repo: string, pr: number, rest: string[]): void {
     }
   `;
 
-  const result = ghGraphQL(query, { owner, name, pr }) as {
-    data: {
-      repository: {
-        pullRequest: {
-          reviewThreads: {
-            nodes: Array<{
-              id: string;
-              isResolved: boolean;
-              comments: { nodes: Array<{ body: string }> };
-            }>;
-          };
-        };
-      };
-    };
-  };
+  const result = ghGraphQL(query, { owner, name, pr });
 
-  const threads = result.data.repository.pullRequest.reviewThreads.nodes;
+  const threads = assertGraphQL<
+    Array<{ id: string; isResolved: boolean; comments: { nodes: Array<{ body: string }> } }>
+  >(result, "data.repository.pullRequest.reviewThreads.nodes", "approve");
   const unresolved = threads.filter((t) => !t.isResolved);
   const total = threads.length;
 
@@ -370,7 +379,7 @@ function cmdApprove(repo: string, pr: number, rest: string[]): void {
     );
     // Print thread summaries
     for (const t of unresolved) {
-      const preview = t.comments.nodes[0]?.body.slice(0, 100) ?? "(empty)";
+      const preview = t.comments.nodes[0]?.body?.slice(0, 100) ?? "(empty)";
       process.stderr.write(`  - ${t.id}: ${preview}\n`);
     }
 
@@ -380,7 +389,7 @@ function cmdApprove(repo: string, pr: number, rest: string[]): void {
       totalThreads: total,
       threads: unresolved.map((t) => ({
         id: t.id,
-        preview: t.comments.nodes[0]?.body.slice(0, 100) ?? "(empty)",
+        preview: t.comments.nodes[0]?.body?.slice(0, 100) ?? "(empty)",
       })),
     };
     process.stdout.write(JSON.stringify(output, null, 2) + "\n");
@@ -439,28 +448,15 @@ function cmdStatus(repo: string, pr: number): void {
     }
   `;
 
-  const result = ghGraphQL(query, { owner, name, pr }) as {
-    data: {
-      repository: {
-        pullRequest: {
-          reviews: {
-            nodes: Array<{
-              state: string;
-              author: { login: string };
-              submittedAt: string;
-            }>;
-          };
-          reviewThreads: {
-            nodes: Array<{ isResolved: boolean }>;
-          };
-        };
-      };
-    };
-  };
+  const result = ghGraphQL(query, { owner, name, pr });
 
-  const prData = result.data.repository.pullRequest;
-  const latestReview = prData.reviews.nodes[0] ?? null;
-  const threads = prData.reviewThreads.nodes;
+  const reviewNodes = assertGraphQL<
+    Array<{ state: string; author: { login: string }; submittedAt: string }>
+  >(result, "data.repository.pullRequest.reviews.nodes", "status");
+  const threads = assertGraphQL<Array<{ isResolved: boolean }>>(
+    result, "data.repository.pullRequest.reviewThreads.nodes", "status"
+  );
+  const latestReview = reviewNodes[0] ?? null;
   const unresolvedCount = threads.filter((t) => !t.isResolved).length;
 
   const output = {
@@ -521,15 +517,11 @@ function cmdResolve(repo: string, _pr: number, rest: string[]): void {
     }
   `;
 
-  const result = ghGraphQL(query, { threadId }) as {
-    data: {
-      resolveReviewThread: {
-        thread: { id: string; isResolved: boolean };
-      };
-    };
-  };
+  const result = ghGraphQL(query, { threadId });
 
-  const thread = result.data.resolveReviewThread.thread;
+  const thread = assertGraphQL<{ id: string; isResolved: boolean }>(
+    result, "data.resolveReviewThread.thread", "resolve"
+  );
   process.stderr.write(`[review-cli] Thread ${thread.id} resolved: ${thread.isResolved}\n`);
   process.stdout.write(JSON.stringify({ threadId: thread.id, resolved: thread.isResolved }, null, 2) + "\n");
 }
