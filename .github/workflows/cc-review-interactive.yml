@@ -42,6 +42,7 @@ jobs:
           cp -r /tmp/cc-review-bot/.claude/skills .claude/
           cp -r /tmp/cc-review-bot/.claude/hooks .claude/
           cp /tmp/cc-review-bot/.claude/CLAUDE.md .claude/CLAUDE.md
+          cp /tmp/cc-review-bot/.claude/settings.json .claude/settings.json
 
       - name: Fetch memory branch
         run: git fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null || true

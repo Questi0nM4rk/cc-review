@@ -1,0 +1,28 @@
+{
+  "body": "Review summary: found 3 issues.",
+  "event": "REQUEST_CHANGES",
+  "comments": [
+    {
+      "path": "src/auth.ts",
+      "line": 42,
+      "side": "RIGHT",
+      "body": "Missing null check on user object."
+    },
+    {
+      "path": "src/utils.ts",
+      "line": null,
+      "body": "This function duplicates logic from src/helpers.ts:parseConfig()."
+    },
+    {
+      "path": "src/api.ts",
+      "line": 105,
+      "side": "RIGHT",
+      "body": "SQL injection risk — use parameterized query."
+    },
+    {
+      "path": "src/config.ts",
+      "line": null,
+      "body": "Missing validation for DATABASE_URL environment variable."
+    }
+  ]
+}

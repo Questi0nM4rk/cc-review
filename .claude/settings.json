@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tsx .claude/hooks/scripts/block-pr-review.ts",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "tsx .claude/hooks/scripts/fix-review-payload.ts",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

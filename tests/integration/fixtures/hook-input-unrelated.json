@@ -1,0 +1,10 @@
+{
+  "session_id": "test-session-003",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "/workspace",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git diff origin/main...HEAD"
+  }
+}
