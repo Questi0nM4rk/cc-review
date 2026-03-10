@@ -1,42 +1,152 @@
-# cc-review
+<p align="center">
+  <h1 align="center">cc-review</h1>
+  <p align="center">
+    Automated PR code review powered by Claude Code + GitHub Actions
+    <br />
+    <em>Inline comments on exact diff lines. Requests changes or approves. Learns from your codebase.</em>
+  </p>
+</p>
 
-Automated PR code review using Claude Code + GitHub Actions. Reviews every PR for bugs, security issues, and logic errors. Auto-approves clean PRs, requests changes when problems are found.
+<p align="center">
+  <strong>No API billing</strong> &mdash; Claude Max subscription via OAuth token
+  &nbsp;&bull;&nbsp;
+  <strong>Bot identity</strong> &mdash; reviews from a GitHub App, not your account
+  &nbsp;&bull;&nbsp;
+  <strong>Full Claude session</strong> &mdash; subagents, skills, memory, slop detection
+</p>
 
-**No API billing** — uses Claude Max subscription via OAuth token.
-**Separate bot identity** — reviews appear from a GitHub App, not your personal account.
-**Full Claude Code session** — subagents, skills, memory, slop detection, and `gh` CLI.
+---
+
+## How It Works
+
+```
+PR opened / @cc-review ping
+         │
+         ▼
+  ┌─────────────────────────┐
+  │   GitHub Actions         │
+  │                          │
+  │  Clone bot repo          │
+  │  Copy .claude/ into repo │
+  │  Pre-fetch PR diff       │
+  └──────────┬──────────────┘
+             │
+             ▼
+  ┌─────────────────────────┐
+  │   Claude Code Session    │
+  │                          │
+  │  Load .cc-review.yaml    │
+  │  Load persistent memory  │
+  │  Deploy slop-researcher  │
+  │  Analyze diff + patterns │
+  └──────────┬──────────────┘
+             │
+             ▼
+  ┌─────────────────────────┐
+  │   review-cli.ts post     │
+  │                          │
+  │  Findings JSON in        │
+  │  → Resolve line numbers  │
+  │  → Build review payload  │
+  │  → Post APPROVE or       │
+  │    REQUEST_CHANGES       │
+  └─────────────────────────┘
+```
 
 ## Architecture
 
 ```
-Bot repo (this repo)              Target repo (your project)
-├── .claude/                      ├── .cc-review.yaml  ← you customize this
-│   ├── CLAUDE.md                 └── .github/workflows/
-│   ├── commands/                     ├── cc-review.yml
-│   ├── agents/ (7 agents)            └── cc-review-interactive.yml
-│   ├── skills/
-│   └── hooks/                   At CI runtime:
-└── scripts/                     workflow clones this repo → copies .claude/ → runs Claude
+Bot repo (this)                     Target repo (yours)
+
+├── .claude/                        ├── .cc-review.yaml      ← customize this
+│   ├── CLAUDE.md                   └── .github/workflows/
+│   │                                   ├── cc-review.yml
+│   ├── commands/                       └── cc-review-interactive.yml
+│   │   ├── review-pr.md
+│   │   ├── bug-hunt.md            Only 3 files. Everything else
+│   │   ├── simplify-review.md     is fetched from the bot repo
+│   │   ├── memory-load.md         at CI runtime.
+│   │   └── memory-save.md
+│   │
+│   ├── agents/
+│   │   ├── slop-researcher.md
+│   │   ├── logic-bug-scanner.md
+│   │   ├── edge-case-scanner.md
+│   │   ├── integration-bug-scanner.md
+│   │   ├── code-quality-scanner.md
+│   │   ├── code-reuse-scanner.md
+│   │   └── efficiency-scanner.md
+│   │
+│   ├── skills/review-guidelines/
+│   │   ├── scripts/
+│   │   │   ├── review-cli.ts      ← review lifecycle CLI
+│   │   │   └── diff-lines.ts      ← diff parser
+│   │   └── references/
+│   │       ├── python-patterns.md
+│   │       ├── typescript-patterns.md
+│   │       └── csharp-patterns.md
+│   │
+│   └── hooks/
+│       └── scripts/
+│           └── enforce-review-cli.ts
+│
+└── scripts/
+    ├── setup.sh / setup.cmd
+    └── install-to-repo.sh
 ```
 
-Target repos are clean — only 3 files installed. All bot intelligence lives here and is fetched at CI runtime.
+---
+
+## Review CLI
+
+> **Principle: Walls > Instructions.** Everything deterministic is enforced outside the model.
+
+The model never calls `gh pr review` or raw GitHub API endpoints. All review operations go through `review-cli.ts` — a PreToolUse hook blocks any attempt to bypass it.
+
+```
+review-cli.ts <command> --repo owner/repo --pr N [options]
+```
+
+| Command | What it does |
+|---------|-------------|
+| **`post`** | Resolve findings to diff lines, build payload, post review |
+| **`approve`** | Approve PR (refuses if unresolved threads exist) |
+| **`status`** | Latest review state + unresolved thread count |
+| **`list`** | List all reviews on a PR |
+| **`resolve`** | Resolve a review thread via GraphQL |
+
+<details>
+<summary><strong>Why not let the model call the API directly?</strong></summary>
+
+<br />
+
+Models hallucinate line numbers, post multiple partial reviews, and skip safety checks before approving. The CLI makes these mistakes structurally impossible:
+
+- **Line resolution** — Model writes a search string, CLI finds the exact diff line
+- **Single review** — CLI bundles all inline comments into one payload
+- **Approval guard** — CLI queries GraphQL for unresolved threads first
+- **Enforcement** — `enforce-review-cli.ts` hook blocks `gh pr review`, direct API `POST`s to the reviews endpoint, and raw GraphQL review mutations
+
+</details>
+
+---
 
 ## Quick Setup
 
 ### Prerequisites
-- [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated
-- [Claude Code](https://claude.ai/code) installed and logged into your Max account
-- Admin access to the target GitHub repository
 
-### Automated Setup
+- [GitHub CLI](https://cli.github.com/) (`gh`) — installed and authenticated
+- [Claude Code](https://claude.ai/code) — logged into your Max account
+- Admin access to the target repository
+
+### One-liner
 
 ```bash
-git clone https://github.com/Questi0nM4rk/cc-review.git
-cd cc-review
-./scripts/setup.sh
+git clone https://github.com/Questi0nM4rk/cc-review.git && cd cc-review && ./scripts/setup.sh
 ```
 
-### Manual Setup
+<details>
+<summary><strong>Manual setup steps</strong></summary>
 
 #### 1. Generate Claude OAuth Token
 ```bash
@@ -44,19 +154,20 @@ claude setup-token
 ```
 Copy the `sk-ant-oat01-...` token. Valid for 1 year.
 
-#### 2. Create a GitHub App (bot identity)
+#### 2. Create a GitHub App
 
-1. Go to https://github.com/settings/apps/new
-2. **Name**: `your-team-reviewer`
-3. **Homepage URL**: your repo URL
-4. **Webhooks**: uncheck "Active"
-5. **Repository permissions**: Contents (R/W), Issues (R/W), Pull requests (R/W)
-6. **Where can this be installed?**: Only on this account
-7. Click **Create GitHub App** → note the **App ID**
-8. **Private keys** → Generate a private key → save the `.pem` file
-9. Click **Install App** → select your repository
+Go to [github.com/settings/apps/new](https://github.com/settings/apps/new):
 
-#### 3. Add Secrets to Your Repo
+| Setting | Value |
+|---------|-------|
+| Name | `your-team-reviewer` |
+| Webhooks | Uncheck "Active" |
+| Permissions | Contents (R/W), Issues (R/W), Pull requests (R/W) |
+| Install scope | Only on this account |
+
+After creating: note the **App ID**, generate a **private key** (`.pem`), and **install** on your repo.
+
+#### 3. Add Secrets
 
 | Secret | Value |
 |--------|-------|
@@ -64,7 +175,7 @@ Copy the `sk-ant-oat01-...` token. Valid for 1 year.
 | `REVIEWER_APP_ID` | Numeric App ID |
 | `REVIEWER_APP_PRIVATE_KEY` | Full `.pem` file contents |
 
-#### 4. Install to Your Repo
+#### 4. Install
 
 ```bash
 ./scripts/install-to-repo.sh /path/to/your/repo
@@ -72,75 +183,121 @@ cd /path/to/your/repo
 git add -A && git commit -m "Add cc-review bot" && git push
 ```
 
-## What Gets Installed in Target Repos
+</details>
 
-Only 3 files — no `.claude/` directory pollution:
+---
 
-```
-your-repo/
-  .cc-review.yaml                    # Project config (you customize this)
-  .github/workflows/
-    cc-review.yml                    # Auto + labeled + manual reviews
-    cc-review-interactive.yml        # @cc-review mentions
-```
+## Configuration
 
-The workflows fetch bot intelligence from this repo at CI runtime:
-- Commands (review-pr, bug-hunt, simplify-review, memory)
-- Agents (slop-researcher, 3 bug scanners, 3 quality scanners)
-- Skills (review guidelines + language-specific patterns)
-- Hooks (blocks `gh pr review`, enforces single `gh api` call)
-
-## Configuration (.cc-review.yaml)
-
-The only file you customize per project.
+Create `.cc-review.yaml` in your repo root:
 
 ```yaml
 version: 1
-mode: standard          # standard | strict | bug-hunt | simplify
-auto_review: true       # Review on PR open
-languages:              # Focus review patterns
+mode: standard            # standard | strict | bug-hunt | simplify
+auto_review: true         # Review on PR open
+
+languages:
   - python
   - typescript
-ignore_paths:           # Skip these files
+
+ignore_paths:
   - "docs/**"
-  - "*.md"
-instructions: |         # Project-specific context
-  This is a FastAPI project using SQLAlchemy.
-known_patterns:         # False positives to skip
+  - "**/*.md"
+
+instructions: |
+  FastAPI project using SQLAlchemy.
+  All subprocess calls must use `uv run`.
+
+known_patterns:
   - "We use broad exception handlers in middleware intentionally"
-slop_detection: true    # AI-generated code detection
-memory: true            # Persistent memory across reviews
+
+slop_detection: true      # AI-generated code detection
+memory: true              # Learn from past reviews
 ```
+
+---
 
 ## Review Modes
 
 | Mode | Trigger | Focus |
-|------|---------|-------|
-| **standard** | PR open (default) | Bugs, security, logic errors |
-| **strict** | Label `strict` or manual | Zero-tolerance — every finding = required change |
-| **bug-hunt** | Label `bug-hunt` or manual | Logic errors, edge cases, integration bugs |
-| **simplify** | Label `simplify` or manual | Code reuse, quality, efficiency |
+|:-----|:--------|:------|
+| **standard** | PR open *(default)* | Bugs, security, logic errors |
+| **strict** | Label `strict` / manual | Zero-tolerance — every finding is a required change |
+| **bug-hunt** | Label `bug-hunt` / manual | Logic errors, edge cases, integration bugs |
+| **simplify** | Label `simplify` / manual | Code reuse, quality, efficiency |
 
-### Interactive Mode
-Comment `@cc-review <request>` on any PR:
-- `@cc-review` — standard review
-- `@cc-review bug-hunt this` — deep bug hunting
-- `@cc-review what does this change do?` — explain the PR
+### Interactive
+
+Comment on any PR to talk to the bot:
+
+```
+@cc-review                          # standard review
+@cc-review bug-hunt this            # deep bug hunting
+@cc-review what does this change?   # explain the PR
+```
+
+---
+
+## Agents
+
+Specialized subagents are deployed depending on the review mode:
+
+| Agent | Mode | Focus |
+|:------|:-----|:------|
+| **slop-researcher** | *all* | AI-generated code patterns |
+| **logic-bug-scanner** | bug-hunt | Deep logic error analysis |
+| **edge-case-scanner** | bug-hunt | Boundaries, off-by-one, null handling |
+| **integration-bug-scanner** | bug-hunt | Cross-component interaction bugs |
+| **code-quality-scanner** | simplify | Dead code, complexity, naming |
+| **code-reuse-scanner** | simplify | Duplication and abstraction |
+| **efficiency-scanner** | simplify | Performance and resource usage |
+
+---
+
+## Memory
+
+The bot maintains a persistent memory branch (`claude-reviewer/memory`) in the target repo when `memory: true`. It learns:
+
+- **False positives** specific to your codebase
+- **Bug patterns** your code is prone to
+- **Conventions** and architectural decisions
+
+Memory is loaded before every review and updated when the bot learns something new.
+
+---
 
 ## Troubleshooting
 
-### Bot not reviewing
-- Check Actions tab → is the workflow running?
+<details>
+<summary>Bot not reviewing</summary>
+
+- Check the Actions tab — is the workflow running?
 - Verify all 3 secrets are set correctly
 - Check the GitHub App is installed on the repo
+</details>
 
-### Bot can't approve
+<details>
+<summary>Bot can't approve</summary>
+
 - The GitHub App must be a different identity from the PR author
 - Verify the App has `pull-requests: write` permission
+</details>
 
-### OAuth token expired
-- Tokens last 1 year. Regenerate with `claude setup-token`
+<details>
+<summary>OAuth token expired</summary>
 
-### Review is too strict / too lenient
+Tokens last 1 year. Regenerate with `claude setup-token`.
+</details>
+
+<details>
+<summary>Review is too strict / too lenient</summary>
+
 - Change `mode` in `.cc-review.yaml`
 - Add project-specific `instructions` and `known_patterns`
+</details>
+
+---
+
+<p align="center">
+  <sub>Built with <a href="https://claude.ai/code">Claude Code</a></sub>
+</p>

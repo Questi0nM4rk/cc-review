@@ -1,0 +1,10 @@
+{
+  "session_id": "test-enforce-001",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "/workspace",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "gh pr review 42 --approve --body 'LGTM'"
+  }
+}

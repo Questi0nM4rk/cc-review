@@ -37,17 +37,20 @@ Launch three agents using the Agent tool. Pass each the PR diff and changed file
 
 Collect all agent findings. Deduplicate (same file + within 2 lines + similar description).
 
-Build `/tmp/review-payload.json` and post ONE review:
+Write findings to `/tmp/findings.json` and post via review-cli.ts:
 
 **Zero findings:**
-```json
-{"body":"Code is already clean — no simplification opportunities found.","event":"APPROVE","comments":[]}
+```bash
+echo '{"summary":"Code is already clean — no simplification opportunities found.","findings":[]}' > /tmp/findings.json
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
 ```
 
-**Any findings** — `REQUEST_CHANGES` with in-diff comments in `comments[]` and out-of-diff issues in `body`.
-
+**Any findings:**
 ```bash
-gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
+cat > /tmp/findings.json <<'EOF'
+{"summary":"Found N simplification opportunities.","findings":[...]}
+EOF
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
 ```
 
 ## Step 4: Update Memory
@@ -60,4 +63,4 @@ Note any new patterns about the codebase's existing utilities or conventions.
 - Every finding must include a concrete suggestion: "Use existing `fn()` from `path`" not "this could be simplified"
 - No severity labels — every simplification is a required change
 - Before flagging duplication, verify the existing code does the same thing
-- NEVER use `gh pr review` — always `gh api`
+- NEVER use `gh pr review` or raw `gh api` — always use review-cli.ts

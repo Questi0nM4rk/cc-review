@@ -17,15 +17,22 @@ alwaysApply: true
 
 **You MUST read `references/github-review-api.md` before Step 6 of every review.** It explains exactly how to map findings to inline diff comments. Load language references only for the PR's languages.
 
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/review-cli.ts` | **The ONLY way to post reviews.** Single CLI for post, approve, status, list, resolve. |
+| `scripts/diff-lines.ts` | Parses unified diff → JSON of commentable lines. Used internally by review-cli.ts. |
+
 ## Review Iron Laws
 
-1. **Single review block** — ONE `gh api` call with ALL comments in the `comments` array. NEVER post comments separately.
+1. **Use review-cli.ts** — ALL review operations go through `review-cli.ts`. NEVER use `gh pr review` or `gh api .../reviews --method POST` directly.
 2. **No severity labels** — NEVER write "Bug (MED)", "Bug (LOW)", "Critical", "High", "Medium", "Low", or any ranking. Every finding is just a finding. Every finding is a requested change. No tiers, no categories, no priorities.
 3. **Every finding needs a failure scenario** — "When X happens, Y breaks because..."
 4. **Verify before reporting** — Read surrounding code, check if issue is handled elsewhere
 5. **No false positives from config** — Check `.cc-review.yaml` `known_patterns` and project memory
-6. **Inline comments are the default** — Every finding that references a specific line in the diff MUST be an inline comment. Use `tsx .claude/skills/review-guidelines/scripts/diff-lines.ts /tmp/pr-diff.txt <file>` to look up the exact `line`, `side`, and `path` values. **Do not guess line numbers. Run the script.** Only findings about missing code, cross-file issues, or lines not in the script output go in the review `body` under `### Outside Diff`.
-7. **All findings or none** — If you found 3 issues, ALL 3 must appear in the review. Not 1 inline + 2 dropped.
+6. **Inline comments are automatic** — The CLI resolves line numbers from your `search` pattern via `diff-lines.ts`. Provide `file` and `search` in your findings JSON. Findings that can't be mapped go to "Outside Diff" automatically.
+7. **All findings or none** — If you found 3 issues, ALL 3 must appear in the findings JSON. Not 1 kept + 2 dropped.
 
 ## Review Decision
 
@@ -48,5 +55,5 @@ alwaysApply: true
 - Do NOT use generic descriptions ("this could be improved") — be specific
 - Do NOT report the same issue on multiple lines — pick the most representative line
 - Do NOT pad reviews with praise ("great PR overall") — get to the point
-- Do NOT post inline comments with null/invalid line numbers — put those in the body
-- Do NOT split findings across multiple API calls — everything in ONE call
+- Do NOT use `gh pr review` or `gh api .../reviews --method POST` directly — use review-cli.ts
+- Do NOT split findings across multiple review-cli.ts calls — everything in ONE call

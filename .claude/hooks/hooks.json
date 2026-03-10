@@ -5,12 +5,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "tsx .claude/hooks/scripts/block-pr-review.ts",
-          "timeout": 10
-        },
-        {
-          "type": "command",
-          "command": "tsx .claude/hooks/scripts/fix-review-payload.ts",
+          "command": "tsx .claude/hooks/scripts/enforce-review-cli.ts",
           "timeout": 10
         }
       ]

@@ -1,0 +1,13 @@
+diff --git a/src/auth.ts b/src/auth.ts
+index abc123..def456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -10,6 +10,9 @@ export function authenticate(token: string) {
+   const decoded = jwt.verify(token, secret);
+   const user = await findUser(decoded.sub);
+   if (!user) throw new AuthError("User not found");
++  if (!user.active) throw new AuthError("Account disabled");
++  user.lastLogin = new Date();
++  await user.save();
+   return user;
+ }

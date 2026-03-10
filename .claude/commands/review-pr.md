@@ -40,10 +40,8 @@ git diff origin/$BASE...origin/$HEAD
 
 If the diff is trivial (version bumps, config-only, dependency updates, markdown edits), approve immediately:
 ```bash
-cat > /tmp/review-payload.json <<'EOF'
-{"body":"LGTM — trivial change, no review needed.","event":"APPROVE","comments":[]}
-EOF
-gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
+echo '{"summary":"LGTM — trivial change, no review needed.","findings":[]}' > /tmp/findings.json
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
 ```
 
 ## Step 3: Slop Research
@@ -78,63 +76,39 @@ Apply `.cc-review.yaml` overrides:
 
 ## Step 6: Post the Review
 
-**First**: Read `.claude/skills/review-guidelines/references/github-review-api.md` — it has the `diff-lines.ts` tool and exact payload format.
+The review CLI handles line resolution, payload building, validation, and posting automatically.
 
-CRITICAL: Post exactly ONE review using a SINGLE `gh api` call. ALL findings go in this ONE call.
+### 6a: Write findings JSON
 
-### 6a: Look up line numbers for each finding
-
-For EACH finding, run `diff-lines.ts` to get the exact line number:
-
-```bash
-# Look up the line for a finding in src/steps/check.ts
-tsx .claude/skills/review-guidelines/scripts/diff-lines.ts /tmp/pr-diff.txt src/steps/check.ts | jq '.[] | select(.content | contains("YOUR_SEARCH_TERM"))'
-```
-
-This returns `{"file": "...", "line": 42, "side": "RIGHT", ...}` — use those values directly.
-
-- **Output exists** → inline comment: use `file` as `path`, `line` as `line`, `side` as `side`
-- **Output empty** → finding is outside the diff. Put it in the review body under `### Outside Diff`
-
-Do NOT skip this step. Do NOT guess line numbers. Run the script for every finding.
-
-### 6b: Build the payload
-
-```bash
-cat > /tmp/review-payload.json <<'PAYLOAD_EOF'
+Write your findings to `/tmp/findings.json`:
+```json
 {
-  "body": "Summary.\n\n### Outside Diff\n\n- **`src/other.ts`**: Cross-file issue description.",
-  "event": "REQUEST_CHANGES",
-  "comments": [
-    {"path": "src/file.ts", "line": 42, "side": "RIGHT", "body": "Issue on this line. Fix: ..."}
+  "summary": "Review summary here.",
+  "findings": [
+    { "file": "src/file.ts", "search": "pattern on the line", "body": "Issue description." },
+    { "file": null, "body": "Cross-file or missing-code issue." }
   ]
 }
-PAYLOAD_EOF
 ```
 
-- Inline findings → `comments` array with `path`, `line`, `side`, `body`
-- Outside-diff findings → `body` under `### Outside Diff` as bullet points
-- Any findings → `"event": "REQUEST_CHANGES"`. Zero findings → `"event": "APPROVE"`
-- If ALL findings are inline, body is just a one-line summary (no `### Outside Diff` needed)
+Each finding needs:
+- `file` — the file path (or `null` for cross-file issues)
+- `search` — text on the line to match in the diff (the CLI resolves the exact line number)
+- `body` — the issue description
 
-### 6c: Validate before submitting
+### 6b: Post via review-cli.ts
 
 ```bash
-# Verify every comment line exists in the diff
-for entry in $(jq -r '.comments[] | "\(.path)|\(.line)"' /tmp/review-payload.json); do
-  FILE="${entry%|*}"; LINE="${entry#*|}"
-  MATCH=$(tsx .claude/skills/review-guidelines/scripts/diff-lines.ts /tmp/pr-diff.txt "$FILE" | jq --argjson l "$LINE" '.[] | select(.line == $l)')
-  [ -z "$MATCH" ] && echo "BAD: $FILE:$LINE" || echo "OK: $FILE:$LINE"
-done
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
 ```
 
-If any show `BAD`, move that finding to the body. Fix the payload, then submit.
+The CLI:
+1. Resolves each finding's line number via `diff-lines.ts`
+2. Maps findings to inline comments or "Outside Diff" body section
+3. Sets event to `APPROVE` (0 findings) or `REQUEST_CHANGES` (any findings)
+4. Posts the review via GitHub API
 
-### 6d: Submit
-
-```bash
-gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
-```
+Done. No manual payload building, no line lookups, no validation step.
 
 ## Step 7: STOP
 
@@ -144,11 +118,9 @@ Memory save is optional and only if you have turns remaining — usually skip it
 
 ## Rules
 
-- Post ONE review via ONE `gh api` call — never multiple calls
-- ALL inline comments inside the `comments` array — never separate API calls
-- NEVER use `gh pr review` — always `gh api repos/{owner}/{repo}/pulls/N/reviews`
+- ALWAYS use `review-cli.ts post` to post reviews — never raw `gh` commands
+- NEVER use `gh pr review` or `gh api .../reviews --method POST` directly
 - NEVER use severity labels (Critical, High, Medium, Low) — every finding is a requested change, no ranking
-- NEVER post a comment with `line: null` — put those findings in the review body instead
-- If you found N issues, ALL N must appear in the review (inline + body). Do not drop findings.
+- If you found N issues, ALL N must appear in the findings JSON. Do not drop findings.
 - Be concise — no filler, no padding
 - Trivial diffs → approve immediately

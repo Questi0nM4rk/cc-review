@@ -334,20 +334,11 @@ async function main(): Promise<void> {
     runOrFail(`git clone --depth 1 -c "credential.https://github.com.helper=!/usr/bin/gh auth git-credential" "https://github.com/${targetRepo}.git" "${workDir}/repo"`, { silent: true });
     const repoDir = join(workDir, "repo");
 
+    // Only deploy workflows + config. Bot intelligence (.claude/) is fetched at CI runtime.
     const filesToCopy: [string, string][] = [
-      [".github/workflows/claude-review.yml", ".github/workflows/claude-review.yml"],
-      [".github/workflows/claude-interactive.yml", ".github/workflows/claude-interactive.yml"],
-      [".github/workflows/claude-strict-review.yml", ".github/workflows/claude-strict-review.yml"],
-      [".github/workflows/claude-bug-hunt.yml", ".github/workflows/claude-bug-hunt.yml"],
-      [".github/workflows/claude-simplify.yml", ".github/workflows/claude-simplify.yml"],
-      [".claude/CLAUDE.md", ".claude/CLAUDE.md"],
-      [".claude/commands/review-pr.md", ".claude/commands/review-pr.md"],
-      [".claude/commands/bug-hunt.md", ".claude/commands/bug-hunt.md"],
-      [".claude/commands/simplify-review.md", ".claude/commands/simplify-review.md"],
-      [".claude/commands/memory-load.md", ".claude/commands/memory-load.md"],
-      [".claude/commands/memory-save.md", ".claude/commands/memory-save.md"],
-      [".claude/agents/slop-researcher.md", ".claude/agents/slop-researcher.md"],
-      [".claude/skills/review-guidelines/SKILL.md", ".claude/skills/review-guidelines/SKILL.md"],
+      [".github/workflows/cc-review.yml", ".github/workflows/cc-review.yml"],
+      [".github/workflows/cc-review-interactive.yml", ".github/workflows/cc-review-interactive.yml"],
+      [".cc-review.yaml", ".cc-review.yaml"],
     ];
 
     for (const [src, dst] of filesToCopy) {
@@ -371,8 +362,8 @@ async function main(): Promise<void> {
 
   // ── Done ──────────────────────────────────────────────
   console.log(`\n${GREEN}${BOLD}Done.${NC} Auto-review is live on ${BOLD}${targetRepo}${NC}.\n`);
-  console.log(`  Open a PR to test it. Comment ${BOLD}@claude${NC} for interactive mode.`);
-  console.log(`  Customize review rules in ${BOLD}.claude/commands/review-pr.md${NC}\n`);
+  console.log(`  Open a PR to test it. Comment ${BOLD}@cc-review${NC} for interactive mode.`);
+  console.log(`  Customize review behavior in ${BOLD}.cc-review.yaml${NC}\n`);
 }
 
 main().catch((e: Error) => {

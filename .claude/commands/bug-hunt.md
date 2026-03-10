@@ -37,17 +37,21 @@ Launch three agents using the Agent tool. Pass each the PR diff and changed file
 
 Collect all agent findings. Deduplicate (same file + within 2 lines + similar description).
 
-Build `/tmp/review-payload.json` and post ONE review:
+Write findings to `/tmp/findings.json` and post via review-cli.ts:
 
 **Zero findings:**
-```json
-{"body":"Bug hunt complete — no logic errors, edge case issues, or integration bugs found.","event":"APPROVE","comments":[]}
+```bash
+echo '{"summary":"Bug hunt complete — no logic errors, edge case issues, or integration bugs found.","findings":[]}' > /tmp/findings.json
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
 ```
 
-**Any findings** — `REQUEST_CHANGES` with in-diff comments in `comments[]` and out-of-diff issues in `body`.
-
+**Any findings:**
 ```bash
-gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
+# Write findings JSON with file, search pattern, and body for each
+cat > /tmp/findings.json <<'EOF'
+{"summary":"Bug hunt found N issues.","findings":[...]}
+EOF
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
 ```
 
 ## Step 4: Update Memory
@@ -60,4 +64,4 @@ Note any new recurring patterns or project-specific insights for memory update.
 - Every finding must describe the specific failure: "When X is empty, line Y throws because..."
 - No severity labels — every bug is a required fix
 - Verify before reporting — read surrounding code, check if handled elsewhere
-- NEVER use `gh pr review` — always `gh api`
+- NEVER use `gh pr review` or raw `gh api` — always use review-cli.ts

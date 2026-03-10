@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration tests for cc-review hooks.
+# Integration tests for cc-review hooks and CLI.
 # Runs inside Docker (or locally if tsx is installed).
 # Exit code 0 = all pass, non-zero = failure.
 
@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIXTURES="$SCRIPT_DIR/fixtures"
 HOOK_DIR="${HOOK_ROOT:-.claude/hooks}"
+CLI_SCRIPT="${CLI_ROOT:-.claude/skills/review-guidelines/scripts}/review-cli.ts"
 
 PASS=0
 FAIL=0
@@ -75,96 +76,76 @@ assert_json_eq() {
   fi
 }
 
-# ── Test Suite 1: block-pr-review.ts ─────────────────────
+assert_exit_code() {
+  local test_name="$1"
+  local expected="$2"
+  local actual="$3"
+  TOTAL=$((TOTAL + 1))
+
+  if [ "$actual" = "$expected" ]; then
+    echo "  ✓ $test_name"
+    PASS=$((PASS + 1))
+  else
+    echo "  ✗ $test_name (expected exit=$expected, got=$actual)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# ── Test Suite 1: enforce-review-cli.ts — Block Patterns ──
 
 echo ""
-echo "═══ Test Suite: block-pr-review.ts ═══"
+echo "═══ Test Suite: enforce-review-cli.ts — Block Patterns ═══"
 echo ""
 
-BLOCK_HOOK="$HOOK_DIR/scripts/block-pr-review.ts"
+ENFORCE_HOOK="$HOOK_DIR/scripts/enforce-review-cli.ts"
 
 echo "Test 1.1: Should BLOCK 'gh pr review' commands"
-OUTPUT=$(run_hook "$BLOCK_HOOK" "$FIXTURES/hook-input-gh-pr-review.json")
+OUTPUT=$(run_hook "$ENFORCE_HOOK" "$FIXTURES/enforce-gh-pr-review.json")
 assert_decision "decision=block" "block" "$OUTPUT"
-assert_contains "reason mentions gh pr review" "gh pr review" "$OUTPUT"
+assert_contains "reason mentions review-cli.ts post" "review-cli.ts post" "$OUTPUT"
 
 echo ""
-echo "Test 1.2: Should ALLOW 'gh api .../reviews' commands"
-OUTPUT=$(run_hook "$BLOCK_HOOK" "$FIXTURES/hook-input-gh-api-review.json")
+echo "Test 1.2: Should BLOCK 'gh api .../reviews --method POST' commands"
+OUTPUT=$(run_hook "$ENFORCE_HOOK" "$FIXTURES/enforce-gh-api-post-review.json")
+assert_decision "decision=block" "block" "$OUTPUT"
+assert_contains "reason mentions review-cli.ts post" "review-cli.ts post" "$OUTPUT"
+
+echo ""
+echo "Test 1.3: Should BLOCK 'gh api .../reviews' with APPROVE"
+OUTPUT=$(run_hook "$ENFORCE_HOOK" "$FIXTURES/enforce-gh-api-approve.json")
+assert_decision "decision=block" "block" "$OUTPUT"
+assert_contains "reason mentions review-cli.ts approve" "review-cli.ts approve" "$OUTPUT"
+
+echo ""
+echo "Test 1.4: Should BLOCK 'gh api graphql' with resolveReviewThread"
+OUTPUT=$(run_hook "$ENFORCE_HOOK" "$FIXTURES/enforce-graphql-resolve.json")
+assert_decision "decision=block" "block" "$OUTPUT"
+assert_contains "reason mentions review-cli.ts resolve" "review-cli.ts resolve" "$OUTPUT"
+
+# ── Test Suite 2: enforce-review-cli.ts — Allow Patterns ──
+
+echo ""
+echo "═══ Test Suite: enforce-review-cli.ts — Allow Patterns ═══"
+echo ""
+
+echo "Test 2.1: Should ALLOW review-cli.ts commands"
+OUTPUT=$(run_hook "$ENFORCE_HOOK" "$FIXTURES/enforce-review-cli-allowed.json")
 assert_decision "decision=allow" "allow" "$OUTPUT"
 
 echo ""
-echo "Test 1.3: Should ALLOW unrelated commands"
-OUTPUT=$(run_hook "$BLOCK_HOOK" "$FIXTURES/hook-input-unrelated.json")
+echo "Test 2.2: Should ALLOW 'gh api .../reviews --method GET' (read-only)"
+OUTPUT=$(run_hook "$ENFORCE_HOOK" "$FIXTURES/enforce-gh-api-get-reviews.json")
 assert_decision "decision=allow" "allow" "$OUTPUT"
 
-# ── Test Suite 2: fix-review-payload.ts ──────────────────
-
 echo ""
-echo "═══ Test Suite: fix-review-payload.ts ═══"
-echo ""
-
-FIX_HOOK="$HOOK_DIR/scripts/fix-review-payload.ts"
-
-echo "Test 2.1: Should move null-line comments to body 'Outside Diff' section"
-# Copy fixture to /tmp where the hook expects it
-cp "$FIXTURES/review-payload-with-nulls.json" /tmp/review-payload.json
-OUTPUT=$(run_hook "$FIX_HOOK" "$FIXTURES/hook-input-gh-api-review.json")
-assert_decision "decision=allow (passthrough)" "allow" "$OUTPUT"
-
-# Verify the payload was modified
-assert_json_eq "comments array has 2 items (nulls removed)" \
-  '.comments | length' "2" /tmp/review-payload.json
-
-assert_json_eq "first comment line=42" \
-  '.comments[0].line' "42" /tmp/review-payload.json
-
-assert_json_eq "second comment line=105" \
-  '.comments[1].line' "105" /tmp/review-payload.json
-
-BODY=$(jq -r '.body' /tmp/review-payload.json)
-assert_contains "body has 'Outside Diff' header" "### Outside Diff" "$BODY"
-assert_contains "body has src/utils.ts finding" "src/utils.ts" "$BODY"
-assert_contains "body has src/config.ts finding" "src/config.ts" "$BODY"
-
-echo ""
-echo "Test 2.2: Should NOT modify payload when all comments have valid lines"
-cp "$FIXTURES/review-payload-clean.json" /tmp/review-payload.json
-ORIGINAL_MD5=$(md5sum /tmp/review-payload.json | cut -d' ' -f1)
-OUTPUT=$(run_hook "$FIX_HOOK" "$FIXTURES/hook-input-gh-api-review.json")
-AFTER_MD5=$(md5sum /tmp/review-payload.json | cut -d' ' -f1)
+echo "Test 2.3: Should ALLOW unrelated commands"
+OUTPUT=$(run_hook "$ENFORCE_HOOK" "$FIXTURES/hook-input-unrelated.json")
 assert_decision "decision=allow" "allow" "$OUTPUT"
 
-TOTAL=$((TOTAL + 1))
-if [ "$ORIGINAL_MD5" = "$AFTER_MD5" ]; then
-  echo "  ✓ payload unchanged (no null-line comments to fix)"
-  PASS=$((PASS + 1))
-else
-  echo "  ✗ payload was modified when it shouldn't have been"
-  FAIL=$((FAIL + 1))
-fi
+# ── Test Suite 3: settings.json + hooks.json structure ────
 
 echo ""
-echo "Test 2.3: Should pass through for non-review commands"
-cp "$FIXTURES/review-payload-clean.json" /tmp/review-payload.json
-ORIGINAL_MD5=$(md5sum /tmp/review-payload.json | cut -d' ' -f1)
-OUTPUT=$(run_hook "$FIX_HOOK" "$FIXTURES/hook-input-unrelated.json")
-AFTER_MD5=$(md5sum /tmp/review-payload.json | cut -d' ' -f1)
-assert_decision "decision=allow (non-review command)" "allow" "$OUTPUT"
-
-TOTAL=$((TOTAL + 1))
-if [ "$ORIGINAL_MD5" = "$AFTER_MD5" ]; then
-  echo "  ✓ payload untouched for unrelated commands"
-  PASS=$((PASS + 1))
-else
-  echo "  ✗ payload was modified on unrelated command"
-  FAIL=$((FAIL + 1))
-fi
-
-# ── Test Suite 3: settings.json structure ────────────────
-
-echo ""
-echo "═══ Test Suite: settings.json validation ═══"
+echo "═══ Test Suite: settings.json + hooks.json validation ═══"
 echo ""
 
 SETTINGS="${SETTINGS_PATH:-.claude/settings.json}"
@@ -195,21 +176,36 @@ assert_json_eq "PreToolUse matcher is 'Bash'" \
 
 HOOK_COUNT=$(jq '.hooks.PreToolUse[0].hooks | length' "$SETTINGS" 2>/dev/null || echo "0")
 TOTAL=$((TOTAL + 1))
-if [ "$HOOK_COUNT" = "2" ]; then
-  echo "  ✓ 2 hooks registered (block-pr-review + fix-review-payload)"
+if [ "$HOOK_COUNT" = "1" ]; then
+  echo "  ✓ 1 hook registered (enforce-review-cli)"
   PASS=$((PASS + 1))
 else
-  echo "  ✗ expected 2 hooks, got $HOOK_COUNT"
+  echo "  ✗ expected 1 hook, got $HOOK_COUNT"
   FAIL=$((FAIL + 1))
 fi
 
-assert_json_eq "hook 1 runs block-pr-review.ts" \
+assert_json_eq "hook runs enforce-review-cli.ts" \
   '.hooks.PreToolUse[0].hooks[0].command' \
-  "tsx .claude/hooks/scripts/block-pr-review.ts" "$SETTINGS"
+  "tsx .claude/hooks/scripts/enforce-review-cli.ts" "$SETTINGS"
 
-assert_json_eq "hook 2 runs fix-review-payload.ts" \
-  '.hooks.PreToolUse[0].hooks[1].command' \
-  "tsx .claude/hooks/scripts/fix-review-payload.ts" "$SETTINGS"
+# Verify old hooks are gone
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$HOOK_DIR/scripts/block-pr-review.ts" ]; then
+  echo "  ✓ block-pr-review.ts deleted"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ block-pr-review.ts still exists (should be deleted)"
+  FAIL=$((FAIL + 1))
+fi
+
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$HOOK_DIR/scripts/fix-review-payload.ts" ]; then
+  echo "  ✓ fix-review-payload.ts deleted"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ fix-review-payload.ts still exists (should be deleted)"
+  FAIL=$((FAIL + 1))
+fi
 
 # ── Test Suite 4: hook-runtime.ts module ─────────────────
 
@@ -219,7 +215,7 @@ echo ""
 
 echo "Test 4.1: Should handle invalid JSON on stdin"
 TOTAL=$((TOTAL + 1))
-OUTPUT=$(echo "not json" | tsx "$BLOCK_HOOK" 2>/dev/null || true)
+OUTPUT=$(echo "not json" | tsx "$ENFORCE_HOOK" 2>/dev/null || true)
 # Should exit cleanly (exit 0) without crashing
 if [ $? -eq 0 ]; then
   echo "  ✓ graceful exit on invalid JSON"
@@ -231,7 +227,7 @@ fi
 
 echo "Test 4.2: Should handle empty stdin"
 TOTAL=$((TOTAL + 1))
-OUTPUT=$(echo "" | tsx "$BLOCK_HOOK" 2>/dev/null || true)
+OUTPUT=$(echo "" | tsx "$ENFORCE_HOOK" 2>/dev/null || true)
 if [ $? -eq 0 ]; then
   echo "  ✓ graceful exit on empty stdin"
   PASS=$((PASS + 1))
@@ -352,6 +348,89 @@ else
   echo "  ✗ expected 0 results, got $EMPTY"
   FAIL=$((FAIL + 1))
 fi
+
+# ── Test Suite 6: review-cli.ts dry-run ──────────────────
+
+echo ""
+echo "═══ Test Suite: review-cli.ts dry-run ═══"
+echo ""
+
+echo "Test 6.1: post --dry-run produces valid payload"
+OUTPUT=$(tsx "$CLI_SCRIPT" post --repo owner/repo --pr 42 --diff "$FIXTURES/sample-diff.txt" --findings "$FIXTURES/sample-findings.json" --dry-run 2>/dev/null)
+EXIT_CODE=$?
+assert_exit_code "exit code 0" "0" "$EXIT_CODE"
+
+TOTAL=$((TOTAL + 1))
+if echo "$OUTPUT" | jq empty 2>/dev/null; then
+  echo "  ✓ output is valid JSON"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ output is not valid JSON"
+  echo "    Got: $OUTPUT"
+  FAIL=$((FAIL + 1))
+fi
+
+TOTAL=$((TOTAL + 1))
+EVENT=$(echo "$OUTPUT" | jq -r '.event' 2>/dev/null || echo "MISSING")
+if [ "$EVENT" = "REQUEST_CHANGES" ]; then
+  echo "  ✓ event=REQUEST_CHANGES (has findings)"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected event=REQUEST_CHANGES, got $EVENT"
+  FAIL=$((FAIL + 1))
+fi
+
+TOTAL=$((TOTAL + 1))
+COMMENT_COUNT=$(echo "$OUTPUT" | jq '.comments | length' 2>/dev/null || echo "0")
+if [ "$COMMENT_COUNT" -ge 1 ]; then
+  echo "  ✓ has $COMMENT_COUNT inline comment(s)"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected at least 1 inline comment, got $COMMENT_COUNT"
+  FAIL=$((FAIL + 1))
+fi
+
+TOTAL=$((TOTAL + 1))
+BODY=$(echo "$OUTPUT" | jq -r '.body' 2>/dev/null || echo "")
+if echo "$BODY" | grep -q "Outside Diff"; then
+  echo "  ✓ body has 'Outside Diff' section (for null-file finding)"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected 'Outside Diff' section in body"
+  FAIL=$((FAIL + 1))
+fi
+
+echo ""
+echo "Test 6.2: post --dry-run with zero findings → APPROVE"
+echo '{"summary":"LGTM","findings":[]}' > /tmp/empty-findings.json
+OUTPUT=$(tsx "$CLI_SCRIPT" post --repo owner/repo --pr 42 --diff "$FIXTURES/sample-diff.txt" --findings /tmp/empty-findings.json --dry-run 2>/dev/null)
+TOTAL=$((TOTAL + 1))
+EVENT=$(echo "$OUTPUT" | jq -r '.event' 2>/dev/null || echo "MISSING")
+if [ "$EVENT" = "APPROVE" ]; then
+  echo "  ✓ event=APPROVE (no findings)"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected event=APPROVE, got $EVENT"
+  FAIL=$((FAIL + 1))
+fi
+
+echo ""
+echo "Test 6.3: post without required args → exit 1"
+EXIT_CODE=0
+tsx "$CLI_SCRIPT" post --repo owner/repo --pr 42 2>/dev/null || EXIT_CODE=$?
+assert_exit_code "exit code 1 (missing --diff/--findings)" "1" "$EXIT_CODE"
+
+echo ""
+echo "Test 6.4: unknown subcommand → exit 1"
+EXIT_CODE=0
+tsx "$CLI_SCRIPT" bogus --repo owner/repo --pr 42 2>/dev/null || EXIT_CODE=$?
+assert_exit_code "exit code 1 (unknown subcommand)" "1" "$EXIT_CODE"
+
+echo ""
+echo "Test 6.5: no args → exit 1"
+EXIT_CODE=0
+tsx "$CLI_SCRIPT" 2>/dev/null || EXIT_CODE=$?
+assert_exit_code "exit code 1 (no args)" "1" "$EXIT_CODE"
 
 # ── Summary ──────────────────────────────────────────────
 
