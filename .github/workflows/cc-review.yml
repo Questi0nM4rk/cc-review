@@ -23,14 +23,13 @@ jobs:
   review:
     runs-on: ubuntu-latest
     if: >-
-      (github.event_name == 'workflow_dispatch') ||
-      (github.event.action == 'opened'
-        && !github.event.pull_request.draft
-        && !contains(github.event.pull_request.user.login, '[bot]')
-        && !contains(toJson(github.event.pull_request.labels.*.name), '"no-review"')) ||
-      (github.event.action == 'labeled'
-        && contains(fromJson('["bug-hunt","simplify","strict"]'), github.event.label.name)
-        && !contains(toJson(github.event.pull_request.labels.*.name), '"no-review"'))
+      !contains(github.event.pull_request.labels.*.name, 'no-review') &&
+      ((github.event_name == 'workflow_dispatch') ||
+       (github.event.action == 'opened'
+         && !github.event.pull_request.draft
+         && !contains(github.event.pull_request.user.login, '[bot]')) ||
+       (github.event.action == 'labeled'
+         && contains(fromJson('["bug-hunt","simplify","strict"]'), github.event.label.name)))
     timeout-minutes: 20
 
     permissions:

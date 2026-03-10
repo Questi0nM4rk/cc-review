@@ -378,19 +378,19 @@ function cmdApprove(repo: string, pr: number, rest: string[]): void {
       `[review-cli] REFUSED: ${unresolved.length} unresolved thread(s). Resolve them first or use --force.\n`
     );
     // Print thread summaries
-    for (const t of unresolved) {
-      const preview = t.comments.nodes[0]?.body?.slice(0, 100) ?? "(empty)";
-      process.stderr.write(`  - ${t.id}: ${preview}\n`);
+    const threadPreviews = unresolved.map((t) => ({
+      id: t.id,
+      preview: t.comments.nodes[0]?.body?.slice(0, 100) ?? "(empty)",
+    }));
+    for (const t of threadPreviews) {
+      process.stderr.write(`  - ${t.id}: ${t.preview}\n`);
     }
 
     const output = {
       approved: false,
       unresolvedThreads: unresolved.length,
       totalThreads: total,
-      threads: unresolved.map((t) => ({
-        id: t.id,
-        preview: t.comments.nodes[0]?.body?.slice(0, 100) ?? "(empty)",
-      })),
+      threads: threadPreviews,
     };
     process.stdout.write(JSON.stringify(output, null, 2) + "\n");
     process.exit(1);

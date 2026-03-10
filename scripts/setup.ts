@@ -281,7 +281,8 @@ async function main(): Promise<void> {
     appId = String(appResponse.id);
     pemKey = appResponse.pem;
     appSlug = appResponse.slug || appName;
-    if (!appId || !pemKey) throw new Error("Missing fields");
+    if (!appId || !/^\d+$/.test(appId)) throw new Error("Invalid or missing App ID");
+    if (!pemKey) throw new Error("Missing private key");
   } catch {
     err("Failed to get app credentials from GitHub.");
     console.log(`  Response: ${appResponseRaw.slice(0, 200)}`);
