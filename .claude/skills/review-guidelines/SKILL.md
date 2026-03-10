@@ -10,7 +10,7 @@ alwaysApply: true
 
 | File | Read When |
 |------|-----------|
-| `references/github-review-api.md` | **ALWAYS** — read this before posting ANY review |
+| `references/github-review-api.md` | **ALWAYS** — read this before posting ANY review. Contains `diff-lines.ts` tool. |
 | `references/csharp-patterns.md` | PR contains `.cs`, `.csproj`, `.sln` files |
 | `references/typescript-patterns.md` | PR contains `.ts`, `.tsx`, `.js`, `.jsx` files |
 | `references/python-patterns.md` | PR contains `.py` files |
@@ -24,7 +24,7 @@ alwaysApply: true
 3. **Every finding needs a failure scenario** — "When X happens, Y breaks because..."
 4. **Verify before reporting** — Read surrounding code, check if issue is handled elsewhere
 5. **No false positives from config** — Check `.cc-review.yaml` `known_patterns` and project memory
-6. **Inline comments are the default** — Every finding that references a specific line in the diff MUST be an inline comment with `path`, `line`, and `side: "RIGHT"`. The `line` is the **file line number** from the `+` side of the `@@` hunk header. Read `references/github-review-api.md` for the exact algorithm. Only findings about missing code, cross-file issues, or lines outside all diff hunks go in the review `body` under `### Outside Diff`.
+6. **Inline comments are the default** — Every finding that references a specific line in the diff MUST be an inline comment. Use `tsx .claude/skills/review-guidelines/scripts/diff-lines.ts /tmp/pr-diff.txt <file>` to look up the exact `line`, `side`, and `path` values. **Do not guess line numbers. Run the script.** Only findings about missing code, cross-file issues, or lines not in the script output go in the review `body` under `### Outside Diff`.
 7. **All findings or none** — If you found 3 issues, ALL 3 must appear in the review. Not 1 inline + 2 dropped.
 
 ## Review Decision

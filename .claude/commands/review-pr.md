@@ -78,35 +78,30 @@ Apply `.cc-review.yaml` overrides:
 
 ## Step 6: Post the Review
 
-**First**: Read `.claude/skills/review-guidelines/references/github-review-api.md` for the exact API format and line-number algorithm.
+**First**: Read `.claude/skills/review-guidelines/references/github-review-api.md` — it has the `diff-lines.ts` tool and exact payload format.
 
 CRITICAL: Post exactly ONE review using a SINGLE `gh api` call. ALL findings go in this ONE call.
 
-### Mapping findings to inline comments
+### 6a: Look up line numbers for each finding
 
-For EACH finding, determine if it can be an inline comment:
+For EACH finding, run `diff-lines.ts` to get the exact line number:
 
-1. Search the diff (from `/tmp/pr-diff.txt` or `gh pr diff`) for the file
-2. Find the `@@` hunk that covers the line you want to comment on
-3. Parse the hunk header `@@ -OLD,COUNT +NEW,COUNT @@`:
-   - The `+NEW` number is where new-file line counting starts
-   - Count down through the hunk: `+` lines and context lines increment the new-file counter, `-` lines do NOT
-4. If your finding's line is a `+` or context line in a hunk → it's an inline comment:
-   ```json
-   {"path": "src/file.ts", "line": 42, "side": "RIGHT", "body": "Issue description."}
-   ```
-5. If the line is NOT in any diff hunk → it goes in the review body under `### Outside Diff`
+```bash
+# Look up the line for a finding in src/steps/check.ts
+tsx .claude/skills/review-guidelines/scripts/diff-lines.ts /tmp/pr-diff.txt src/steps/check.ts | jq '.[] | select(.content | contains("YOUR_SEARCH_TERM"))'
+```
 
-### Building the payload
+This returns `{"file": "...", "line": 42, "side": "RIGHT", ...}` — use those values directly.
 
-1. Collect ALL findings — no severity labels, no ranking
-2. **Inline findings** (line exists in diff): add to `comments` array with `path`, `line`, `side: "RIGHT"`, `body`
-3. **Outside-diff findings** (missing code, cross-file, line not in any hunk): add to `body` under `### Outside Diff` as bullet points
-4. If any findings exist → `"event": "REQUEST_CHANGES"`. If zero → `"event": "APPROVE"`
+- **Output exists** → inline comment: use `file` as `path`, `line` as `line`, `side` as `side`
+- **Output empty** → finding is outside the diff. Put it in the review body under `### Outside Diff`
 
-### Payload format
+Do NOT skip this step. Do NOT guess line numbers. Run the script for every finding.
 
-```json
+### 6b: Build the payload
+
+```bash
+cat > /tmp/review-payload.json <<'PAYLOAD_EOF'
 {
   "body": "Summary.\n\n### Outside Diff\n\n- **`src/other.ts`**: Cross-file issue description.",
   "event": "REQUEST_CHANGES",
@@ -114,26 +109,32 @@ For EACH finding, determine if it can be an inline comment:
     {"path": "src/file.ts", "line": 42, "side": "RIGHT", "body": "Issue on this line. Fix: ..."}
   ]
 }
+PAYLOAD_EOF
 ```
 
-If ALL findings are inline, the body is just a one-line summary (no `### Outside Diff` section needed).
+- Inline findings → `comments` array with `path`, `line`, `side`, `body`
+- Outside-diff findings → `body` under `### Outside Diff` as bullet points
+- Any findings → `"event": "REQUEST_CHANGES"`. Zero findings → `"event": "APPROVE"`
+- If ALL findings are inline, body is just a one-line summary (no `### Outside Diff` needed)
 
-### Submit
+### 6c: Validate before submitting
 
 ```bash
-cat > /tmp/review-payload.json <<'PAYLOAD_EOF'
-<your JSON here>
-PAYLOAD_EOF
-gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
+# Verify every comment line exists in the diff
+for entry in $(jq -r '.comments[] | "\(.path)|\(.line)"' /tmp/review-payload.json); do
+  FILE="${entry%|*}"; LINE="${entry#*|}"
+  MATCH=$(tsx .claude/skills/review-guidelines/scripts/diff-lines.ts /tmp/pr-diff.txt "$FILE" | jq --argjson l "$LINE" '.[] | select(.line == $l)')
+  [ -z "$MATCH" ] && echo "BAD: $FILE:$LINE" || echo "OK: $FILE:$LINE"
+done
 ```
 
-### Verification before submitting
+If any show `BAD`, move that finding to the body. Fix the payload, then submit.
 
-- Every `line` value → check it exists as a `+` or context line in the diff for that file
-- Every `path` → must match `diff --git a/PATH b/PATH` exactly
-- Every comment has `"side": "RIGHT"` (unless commenting on a removed line)
-- No comment has `line: null` — those MUST be in the body
-- Finding count: inline comments + body bullet points = total findings. Nothing dropped.
+### 6d: Submit
+
+```bash
+gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/reviews --method POST --input /tmp/review-payload.json
+```
 
 ## Step 7: STOP
 

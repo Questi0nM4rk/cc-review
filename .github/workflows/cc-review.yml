@@ -168,4 +168,4 @@ jobs:
           cat /tmp/prompt.txt | claude -p \
             --max-turns 75 \
             --model claude-sonnet-4-6 \
-            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Read,Glob,Grep,Agent"
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Bash(tsx:*),Bash(jq:*),Bash(for:*),Read,Glob,Grep,Agent"

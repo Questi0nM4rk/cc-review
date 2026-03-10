@@ -240,6 +240,119 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ── Test Suite 5: diff-lines.ts script ───────────────────
+
+echo ""
+echo "═══ Test Suite: diff-lines.ts ═══"
+echo ""
+
+DIFF_SCRIPT=".claude/skills/review-guidelines/scripts/diff-lines.ts"
+
+# Create a test diff
+cat > /tmp/test-diff.txt <<'DIFFEOF'
+diff --git a/src/auth.ts b/src/auth.ts
+index abc123..def456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -10,6 +10,9 @@ export function authenticate(token: string) {
+   const decoded = jwt.verify(token, secret);
+   const user = await findUser(decoded.sub);
+   if (!user) throw new AuthError("User not found");
++  if (!user.active) throw new AuthError("Account disabled");
++  user.lastLogin = new Date();
++  await user.save();
+   return user;
+ }
+diff --git a/src/config.ts b/src/config.ts
+new file mode 100644
+--- /dev/null
++++ b/src/config.ts
+@@ -0,0 +1,4 @@
++export const config = {
++  port: 3000,
++  secret: process.env.SECRET,
++};
+DIFFEOF
+
+echo "Test 5.1: Should parse all commentable lines"
+LINE_COUNT=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt | jq length)
+TOTAL=$((TOTAL + 1))
+if [ "$LINE_COUNT" -gt 0 ]; then
+  echo "  ✓ parsed $LINE_COUNT commentable lines"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ parsed 0 lines"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Test 5.2: Should filter by file path"
+CONFIG_LINES=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt src/config.ts | jq length)
+TOTAL=$((TOTAL + 1))
+if [ "$CONFIG_LINES" -ge 4 ] && [ "$CONFIG_LINES" -le 5 ]; then
+  echo "  ✓ src/config.ts has $CONFIG_LINES lines"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected 4 lines for src/config.ts, got $CONFIG_LINES"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Test 5.3: Added lines have correct line numbers"
+FIRST_ADDED=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt src/auth.ts | jq '[.[] | select(.type=="added")][0].line')
+TOTAL=$((TOTAL + 1))
+if [ "$FIRST_ADDED" = "13" ]; then
+  echo "  ✓ first added line in auth.ts is line 13"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected line 13, got $FIRST_ADDED"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Test 5.4: Added lines have side=RIGHT"
+RIGHT_COUNT=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt | jq '[.[] | select(.type=="added" and .side=="RIGHT")] | length')
+ADDED_COUNT=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt | jq '[.[] | select(.type=="added")] | length')
+TOTAL=$((TOTAL + 1))
+if [ "$RIGHT_COUNT" = "$ADDED_COUNT" ]; then
+  echo "  ✓ all added lines have side=RIGHT"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ not all added lines have side=RIGHT ($RIGHT_COUNT/$ADDED_COUNT)"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Test 5.5: Can search by content pattern"
+MATCH=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt src/auth.ts | jq '.[] | select(.content | contains("lastLogin"))')
+TOTAL=$((TOTAL + 1))
+if echo "$MATCH" | jq -e '.line == 14' > /dev/null 2>&1; then
+  echo "  ✓ found 'lastLogin' at line 14"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ could not find 'lastLogin' at expected line"
+  echo "    Got: $MATCH"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Test 5.6: New file starts at line 1"
+FIRST_LINE=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt src/config.ts | jq '.[0].line')
+TOTAL=$((TOTAL + 1))
+if [ "$FIRST_LINE" = "1" ]; then
+  echo "  ✓ new file src/config.ts starts at line 1"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected line 1, got $FIRST_LINE"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Test 5.7: Returns empty for non-existent file"
+EMPTY=$(tsx "$DIFF_SCRIPT" /tmp/test-diff.txt src/nonexistent.ts | jq length)
+TOTAL=$((TOTAL + 1))
+if [ "$EMPTY" = "0" ]; then
+  echo "  ✓ empty result for non-existent file"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ expected 0 results, got $EMPTY"
+  FAIL=$((FAIL + 1))
+fi
+
 # ── Summary ──────────────────────────────────────────────
 
 echo ""
