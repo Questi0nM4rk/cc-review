@@ -453,7 +453,7 @@ NEVER use `gh pr review` or `gh api .../reviews --method POST` directly.
 You have a limited number of turns. Be efficient:
 - Do NOT read files that aren't in the diff unless verifying a specific finding
 - For large diffs (>500 lines), skip slop research — go straight to review
-- Memory save is OPTIONAL — only if you have turns left after posting the review
+- Memory and review logs are saved automatically by the workflow after your session ends — do NOT spend turns on memory-save
 - Once you post the review, STOP. Your job is done.
 
 ### DON'Ts

@@ -172,4 +172,69 @@ jobs:
           cat /tmp/prompt.txt | claude -p \
             --max-turns 75 \
             --model claude-sonnet-4-6 \
-            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Bash(tsx:*),Bash(jq:*),Bash(for:*),Read,Glob,Grep,Agent"
+            --output-format text \
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Bash(tsx:*),Bash(jq:*),Bash(for:*),Read,Glob,Grep,Agent" \
+            | tee /tmp/review-output.txt
+
+      - name: Save memory and review log
+        if: always() && steps.config.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          PR_NUMBER="${{ steps.config.outputs.pr_number }}"
+          REPO="${{ github.repository }}"
+          MODE="${{ steps.config.outputs.mode }}"
+          REVIEW_STATUS="${{ steps.review.outcome || 'unknown' }}"
+
+          # Configure git for the push
+          git config user.name "cc-review[bot]"
+          git config user.email "cc-review[bot]@users.noreply.github.com"
+
+          # Fetch or create the memory branch
+          git fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null || true
+
+          if git rev-parse --verify claude-reviewer/memory 2>/dev/null; then
+            git checkout claude-reviewer/memory
+          else
+            git checkout --orphan claude-reviewer/memory
+            git reset --hard
+          fi
+
+          # Write review log (overwrite — last review only)
+          cat > REVIEW_LOG.md <<LOGEOF
+          # Last Review Log
+
+          | Field | Value |
+          |-------|-------|
+          | Repository | ${REPO} |
+          | PR | #${PR_NUMBER} |
+          | Mode | ${MODE} |
+          | Status | ${REVIEW_STATUS} |
+          | Date | $(date -u '+%Y-%m-%d %H:%M UTC') |
+          | Run | https://github.com/${REPO}/actions/runs/${{ github.run_id }} |
+
+          ## Claude Output
+
+          \`\`\`
+          $(cat /tmp/review-output.txt 2>/dev/null || echo "No output captured")
+          \`\`\`
+          LOGEOF
+
+          # Ensure MEMORY.md exists (preserve if already there)
+          if [ ! -f MEMORY.md ]; then
+            cat > MEMORY.md <<'MEMEOF'
+          # Project Memory
+
+          No insights yet — memory will be populated after meaningful reviews.
+          MEMEOF
+          fi
+
+          # Commit and push
+          git add MEMORY.md REVIEW_LOG.md
+          if ! git diff --cached --quiet; then
+            git commit -m "Update review log for PR #${PR_NUMBER}"
+            git push origin claude-reviewer/memory
+          fi
+
+          # Return to original branch
+          git checkout - 2>/dev/null || true
