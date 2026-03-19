@@ -40,8 +40,9 @@ git diff origin/$BASE...origin/$HEAD
 
 If the diff is trivial (version bumps, config-only, dependency updates, markdown edits), approve immediately:
 ```bash
-echo '{"summary":"LGTM — trivial change, no review needed.","findings":[]}' > /tmp/findings.json
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings - <<'FINDINGS_EOF'
+{"summary":"LGTM — trivial change, no review needed.","findings":[]}
+FINDINGS_EOF
 ```
 
 ## Step 3: Slop Research
@@ -78,10 +79,12 @@ Apply `.cc-review.yaml` overrides:
 
 The review CLI handles line resolution, payload building, validation, and posting automatically.
 
-### 6a: Write findings JSON
+### 6a: Post via review-cli.ts
 
-Write your findings to `/tmp/findings.json`:
-```json
+Pipe findings JSON directly into the CLI via stdin (`--findings -`). No temp file needed.
+
+```bash
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings - <<'FINDINGS_EOF'
 {
   "summary": "Review summary here.",
   "findings": [
@@ -89,18 +92,13 @@ Write your findings to `/tmp/findings.json`:
     { "file": null, "body": "Cross-file or missing-code issue." }
   ]
 }
+FINDINGS_EOF
 ```
 
 Each finding needs:
 - `file` — the file path (or `null` for cross-file issues)
 - `search` — text on the line to match in the diff (the CLI resolves the exact line number)
 - `body` — the issue description
-
-### 6b: Post via review-cli.ts
-
-```bash
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
-```
 
 The CLI:
 1. Resolves each finding's line number via `diff-lines.ts`

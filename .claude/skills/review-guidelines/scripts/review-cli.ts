@@ -13,7 +13,7 @@
  *   resolve  — Resolve a review thread by node ID
  *
  * Usage:
- *   tsx review-cli.ts post    --repo owner/repo --pr 98 --diff /tmp/pr-diff.txt --findings /tmp/findings.json [--dry-run]
+ *   tsx review-cli.ts post    --repo owner/repo --pr 98 --diff /tmp/pr-diff.txt --findings - [--dry-run] <<'FINDINGS_EOF' ... FINDINGS_EOF
  *   tsx review-cli.ts approve --repo owner/repo --pr 98 [--force] [--dry-run]
  *   tsx review-cli.ts status  --repo owner/repo --pr 98
  *   tsx review-cli.ts list    --repo owner/repo --pr 98

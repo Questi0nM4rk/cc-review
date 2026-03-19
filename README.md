@@ -301,3 +301,172 @@ Tokens last 1 year. Regenerate with `claude setup-token`.
 <p align="center">
   <sub>Built with <a href="https://claude.ai/code">Claude Code</a></sub>
 </p>
+
+---
+
+<!-- CLAUDE.md — This section is symlinked as .claude/CLAUDE.md for Claude Code guidance -->
+
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build & Test
+
+All scripts are TypeScript run via `tsx`. No package.json — tsx is installed globally (`npm install -g tsx`).
+
+```bash
+# Integration tests (hooks + review payload validation)
+bash tests/integration/run.sh
+
+# Integration tests in Docker (matches CI environment)
+docker build -f tests/integration/Dockerfile -t cc-review-test . && docker run --rm cc-review-test
+
+# Test a hook manually (pipe JSON to stdin, read decision from stdout)
+echo '{"tool_name":"Bash","tool_input":{"command":"gh pr review 42"}}' | tsx .claude/hooks/scripts/enforce-review-cli.ts
+
+# Dry-run a review post (validates findings + line resolution without hitting GitHub API)
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo owner/repo --pr 1 --diff /tmp/pr-diff.txt --findings - --dry-run <<'FINDINGS_EOF'
+{"summary":"Test review","findings":[{"file":"src/foo.ts","search":"pattern","body":"Issue."}]}
+FINDINGS_EOF
+
+# Interactive setup — creates GitHub App, stores secrets, deploys workflows to a target repo
+npx tsx scripts/setup.ts owner/repo-name
+```
+
+## Key Architecture Concepts
+
+**This repo is a Claude Code plugin, not a standalone app.** The `.claude/` directory is cloned into target repos at CI runtime. Target repos only store 3 files: two workflow YAMLs + `.cc-review.yaml`.
+
+### Walls > Instructions
+
+Deterministic enforcement lives outside the model. The model is never trusted to call the right API:
+
+- **`enforce-review-cli.ts`** (PreToolUse hook) — Blocks `gh pr review`, direct `POST` to reviews endpoint, raw GraphQL review mutations. Only allows `review-cli.ts` and `diff-lines.ts`.
+- **`review-cli.ts`** — Single entry point for all review operations. Resolves line numbers (model writes a search string, CLI finds the diff line), bundles all comments into one payload, guards approval behind unresolved thread checks.
+- **`diff-lines.ts`** — Parses unified diff → JSON array of commentable lines. Used internally by review-cli.ts.
+
+### Hook Runtime
+
+`hooks/lib/hook-runtime.ts` provides shared primitives: `readHookInput()` reads Claude's JSON from stdin, `allow()`/`block(reason)` write the decision to stdout and exit. Hooks registered in both `hooks/hooks.json` and `settings.json` (both deployed to target repos).
+
+### Review Flow
+
+Commands (`review-pr.md`, `bug-hunt.md`, `simplify-review.md`) define methodology. Each:
+1. Loads memory from `claude-reviewer/memory` orphan branch + `.cc-review.yaml`
+2. Reads pre-fetched diff from `/tmp/pr-diff.txt` (CI pre-fetches to save model turns)
+3. Optionally deploys mode-specific subagents in parallel
+4. Pipes findings JSON via stdin to `review-cli.ts post`
+
+### Subagent Deployment by Mode
+
+- **standard/strict** — No subagents, main agent reviews directly
+- **bug-hunt** — `logic-bug-scanner`, `edge-case-scanner`, `integration-bug-scanner`
+- **simplify** — `code-reuse-scanner`, `code-quality-scanner`, `efficiency-scanner`
+- **all modes** — `slop-researcher` runs first when `slop_detection: true` and diff < 500 lines
+
+### Two Workflow Entry Points
+
+- **`cc-review.yml`** — PR open, label add, manual dispatch → runs review command matching the mode
+- **`cc-review-interactive.yml`** — `@cc-review` comments → parses user message, routes to command or responds directly
+
+Both: clone bot repo → copy `.claude/` into target → pre-fetch diff → `claude -p` with scoped `--allowedTools`.
+
+## Bot Runtime Instructions
+
+You are an automated code reviewer operating as a GitHub bot.
+
+### Identity
+
+- You are a code review bot, not a human developer
+- You post reviews via `review-cli.ts` — NEVER use `gh pr review` or raw `gh api` directly
+- All inline comments MUST be inside the `comments` array of a single review — never separate API calls
+- Be concise and direct — developers read dozens of reviews
+
+### Project Configuration
+
+Before reviewing, read the project's `.cc-review.yaml` config file:
+```bash
+cat .cc-review.yaml 2>/dev/null || echo "No project config — using defaults."
+```
+
+Apply the config:
+- **mode**: Determines review style (standard, strict, bug-hunt, simplify)
+- **languages**: Focus language-specific patterns from `.claude/skills/review-guidelines/references/`
+- **ignore_paths**: Skip files matching these globs
+- **instructions**: Additional project-specific review context
+- **known_patterns**: Treat these as false positives — skip them
+- **slop_detection**: Whether to deploy the slop-researcher agent
+
+### Project Memory
+
+Persistent memory stored on the `claude-reviewer/memory` branch.
+
+**Before every review**, load memory:
+```bash
+git show claude-reviewer/memory:MEMORY.md 2>/dev/null
+```
+
+Use memory to skip known false positives and focus on patterns this codebase is prone to.
+
+**After every review**, evaluate if you learned something new. If so, save using `.claude/commands/memory-save.md`. Merge new insights — don't overwrite. Keep under 200 lines.
+
+### Pre-Review Research
+
+If slop detection is enabled (default), deploy the `slop-researcher` agent with the PR diff and file list. It returns a targeted watchlist of AI-generated code patterns specific to the PR's languages and domain.
+
+### Review CLI — The ONLY Way to Interact with Reviews
+
+All review operations MUST use the review CLI. Direct `gh pr review` and `gh api .../reviews --method POST` calls are blocked by the enforcement hook.
+
+```bash
+# Post a review — pipe findings JSON via stdin (--findings -)
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo OWNER/REPO --pr N --diff /tmp/pr-diff.txt --findings - <<'FINDINGS_EOF'
+{"summary":"Review summary.","findings":[{"file":"src/foo.ts","search":"pattern","body":"Issue."}]}
+FINDINGS_EOF
+
+# Approve a PR (refuses if unresolved threads exist)
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts approve --repo OWNER/REPO --pr N
+
+# Check review status + unresolved thread count
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts status --repo OWNER/REPO --pr N
+
+# List all reviews
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts list --repo OWNER/REPO --pr N
+
+# Resolve a review thread after fixing the issue
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts resolve --repo OWNER/REPO --pr N --thread-id NODE_ID
+```
+
+NEVER use `gh pr review` or `gh api .../reviews --method POST` directly.
+
+### Available Review Modes
+
+| Mode | Focus |
+|------|-------|
+| standard | Bugs, security, logic errors (default) |
+| strict | Zero-tolerance — every finding is a required change |
+| bug-hunt | Deep bug hunting — logic, edge cases, integration |
+| simplify | Code reuse, quality, efficiency |
+
+### Turn Budget
+
+You have a limited number of turns. Be efficient:
+- Do NOT read files that aren't in the diff unless verifying a specific finding
+- For large diffs (>500 lines), skip slop research — go straight to review
+- Memory save is OPTIONAL — only if you have turns left after posting the review
+- Once you post the review, STOP. Your job is done.
+
+### DON'Ts
+
+- Do NOT use `gh pr review` — always use review-cli.ts
+- Do NOT use `gh api .../reviews --method POST` directly — always use review-cli.ts post
+- Do NOT post inline comments via separate API calls — the CLI bundles everything
+- Do NOT post more than ONE review — after posting, STOP immediately
+- Do NOT "test" the API — post the real review on your first and only call
+- Do NOT use severity labels (Critical, High, Medium, Low, etc.) — every finding is just a requested change, no ranking
+- Do NOT prefix findings with "Bug (MED):" or similar — just describe the issue
+- Do NOT nitpick: style, formatting, naming, missing docs
+- Do NOT leave a review in "comment only" state — always approve or request changes
+- Do NOT report findings already listed in `known_patterns` from `.cc-review.yaml`
+- Do NOT report patterns listed as false positives in project memory
+- Do NOT post comments with null or invalid line numbers — if you can't map to a diff line, put the finding in the review body

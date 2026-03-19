@@ -6,16 +6,13 @@ All review operations go through `review-cli.ts`. Direct `gh pr review` and `gh 
 
 ### Post a Review
 
+Pipe findings JSON via stdin using `--findings -`:
+
 ```bash
 tsx .claude/skills/review-guidelines/scripts/review-cli.ts post \
   --repo owner/repo --pr 98 \
   --diff /tmp/pr-diff.txt \
-  --findings /tmp/findings.json \
-  [--dry-run]
-```
-
-Write findings to `/tmp/findings.json`:
-```json
+  --findings - [--dry-run] <<'FINDINGS_EOF'
 {
   "summary": "Found 2 issues.",
   "findings": [
@@ -24,6 +21,7 @@ Write findings to `/tmp/findings.json`:
     { "file": null, "body": "Cross-file issue: API contract mismatch between auth and config modules." }
   ]
 }
+FINDINGS_EOF
 ```
 
 **Finding fields:**

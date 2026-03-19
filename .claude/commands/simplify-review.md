@@ -23,7 +23,7 @@ gh pr view $ARGUMENTS --json title,body,baseRefName,headRefName,files --jq '.'
 gh pr diff $ARGUMENTS
 ```
 
-If the diff is trivial (config changes, version bumps), approve immediately via `gh api` and stop.
+If the diff is trivial (config changes, version bumps), approve immediately via `review-cli.ts post` with zero findings and stop.
 
 ## Step 2: Deploy Simplification Agents in Parallel
 
@@ -37,20 +37,20 @@ Launch three agents using the Agent tool. Pass each the PR diff and changed file
 
 Collect all agent findings. Deduplicate (same file + within 2 lines + similar description).
 
-Write findings to `/tmp/findings.json` and post via review-cli.ts:
+Pipe findings JSON via stdin (`--findings -`) to review-cli.ts:
 
 **Zero findings:**
 ```bash
-echo '{"summary":"Code is already clean — no simplification opportunities found.","findings":[]}' > /tmp/findings.json
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings - <<'FINDINGS_EOF'
+{"summary":"Code is already clean — no simplification opportunities found.","findings":[]}
+FINDINGS_EOF
 ```
 
 **Any findings:**
 ```bash
-cat > /tmp/findings.json <<'EOF'
+tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings - <<'FINDINGS_EOF'
 {"summary":"Found N simplification opportunities.","findings":[...]}
-EOF
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo {owner}/{repo} --pr $ARGUMENTS --diff /tmp/pr-diff.txt --findings /tmp/findings.json
+FINDINGS_EOF
 ```
 
 ## Step 4: Update Memory
