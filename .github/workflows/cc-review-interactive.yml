@@ -135,7 +135,7 @@ jobs:
             --max-turns 75 \
             --model claude-sonnet-4-6 \
             --output-format text \
-            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Bash(tsx:*),Bash(jq:*),Bash(for:*),Read,Glob,Grep,Agent" \
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Bash(tsx:*),Bash(jq:*),Bash(for:*),Read,Glob,Grep,Agent,WebSearch,WebFetch" \
             | tee /tmp/review-output.txt
 
       - name: Save memory and review log
