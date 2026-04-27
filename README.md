@@ -123,6 +123,21 @@ Stored on the target repo:
 | `REVIEWER_APP_ID` | Numeric App ID |
 | `REVIEWER_APP_PRIVATE_KEY` | Full `.pem` file contents |
 
+### Upgrading existing consumers
+
+The workflow YAMLs in consumer repos are static copies — they don't auto-update when this bot's main branch changes. After meaningful workflow changes here, re-run:
+
+```bash
+./scripts/install-to-repo.sh /path/to/consumer-repo
+cd /path/to/consumer-repo
+git checkout -b chore/upgrade-cc-review-workflows
+git add .github/workflows/cc-review*.yml .cc-review.yaml
+git commit -m "chore: upgrade cc-review workflows"
+git push -u origin HEAD && gh pr create --fill
+```
+
+Secrets, GitHub App installs, and memory branches all carry over — only the workflow files need refreshing.
+
 ---
 
 ## Configuration
