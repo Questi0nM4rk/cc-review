@@ -3,198 +3,135 @@
   <p align="center">
     Automated PR code review powered by Claude Code + GitHub Actions
     <br />
-    <em>Inline comments on exact diff lines. Requests changes or approves. Learns from your codebase.</em>
+    <em>Runs the <a href="https://github.com/Questi0nM4rk/qsm-marketplace">qsm-strict-review</a> 4-phase pipeline on every PR. Inline comments, atomic review, project memory.</em>
   </p>
 </p>
 
 <p align="center">
-  <strong>No API billing</strong> &mdash; Claude Max subscription via OAuth token
+  <strong>No API billing</strong> &mdash; Claude Max OAuth token
   &nbsp;&bull;&nbsp;
   <strong>Bot identity</strong> &mdash; reviews from a GitHub App, not your account
   &nbsp;&bull;&nbsp;
-  <strong>Full Claude session</strong> &mdash; subagents, skills, memory, slop detection
+  <strong>Plugin-based</strong> &mdash; review logic lives in qsm-marketplace
 </p>
 
 ---
 
-## How It Works
+## How it works
 
 ```
-PR opened / @cc-review ping
+PR opened / cc-review label / @cc-review mention
          │
          ▼
-  ┌─────────────────────────┐
-  │   GitHub Actions         │
-  │                          │
-  │  Clone bot repo          │
-  │  Copy .claude/ into repo │
-  │  Pre-fetch PR diff       │
-  └──────────┬──────────────┘
+  ┌─────────────────────────────┐
+  │  GitHub Actions              │
+  │                              │
+  │  Generate App token          │
+  │  Clone cc-review with        │
+  │    qsm-marketplace submodule │
+  │  Pre-fetch PR diff + meta    │
+  └──────────┬──────────────────┘
              │
              ▼
-  ┌─────────────────────────┐
-  │   Claude Code Session    │
-  │                          │
-  │  Load .cc-review.yaml    │
-  │  Load persistent memory  │
-  │  Deploy slop-researcher  │
-  │  Analyze diff + patterns │
-  └──────────┬──────────────┘
+  ┌─────────────────────────────┐
+  │  claude -p (headless)        │
+  │  --plugin-dir strict-review  │
+  │  --plugin-dir qsm-git-tools  │
+  │                              │
+  │  Run /strict-review:         │
+  │   Phase 0  research          │
+  │   Phase 1  scan + simplify   │
+  │   Phase 2  false-pos verify  │
+  │   Phase 3  synthesize + post │
+  └──────────┬──────────────────┘
              │
              ▼
-  ┌─────────────────────────┐
-  │   review-cli.ts post     │
-  │                          │
-  │  Findings JSON in        │
-  │  → Resolve line numbers  │
-  │  → Build review payload  │
-  │  → Post APPROVE or       │
-  │    REQUEST_CHANGES       │
-  └─────────────────────────┘
+  ┌─────────────────────────────┐
+  │  Single atomic PR review     │
+  │  REQUEST_CHANGES or APPROVE  │
+  │  Memory branch updated       │
+  └─────────────────────────────┘
 ```
+
+The bot never calls `gh pr review` — `qsm-strict-review`'s synthesizer posts the review as one `POST /pulls/N/reviews` payload. See [docs/github-review-api.md](docs/github-review-api.md) for the contract.
 
 ## Architecture
 
 ```
-Bot repo (this)                     Target repo (yours)
+Bot repo (this)                       Target repo (yours)
 
-├── .claude/                        ├── .cc-review.yaml      ← customize this
-│   ├── CLAUDE.md                   └── .github/workflows/
-│   │                                   ├── cc-review.yml
-│   ├── commands/                       └── cc-review-interactive.yml
-│   │   ├── review-pr.md
-│   │   ├── bug-hunt.md            Only 3 files. Everything else
-│   │   ├── simplify-review.md     is fetched from the bot repo
-│   │   ├── memory-load.md         at CI runtime.
-│   │   └── memory-save.md
-│   │
-│   ├── agents/
-│   │   ├── slop-researcher.md
-│   │   ├── logic-bug-scanner.md
-│   │   ├── edge-case-scanner.md
-│   │   ├── integration-bug-scanner.md
-│   │   ├── code-quality-scanner.md
-│   │   ├── code-reuse-scanner.md
-│   │   └── efficiency-scanner.md
-│   │
-│   ├── skills/review-guidelines/
-│   │   ├── scripts/
-│   │   │   ├── review-cli.ts      ← review lifecycle CLI
-│   │   │   └── diff-lines.ts      ← diff parser
-│   │   └── references/
-│   │       ├── python-patterns.md
-│   │       ├── typescript-patterns.md
-│   │       └── csharp-patterns.md
-│   │
-│   └── hooks/
-│       └── scripts/
-│           └── enforce-review-cli.ts
+├── .github/workflows/                ├── .cc-review.yaml             ← customize this
+│   ├── cc-review.yml                 └── .github/workflows/
+│   ├── cc-review-interactive.yml         ├── cc-review.yml           ← copied at install
+│   └── test.yml                          └── cc-review-interactive.yml
 │
-└── scripts/
-    ├── setup.sh / setup.cmd
-    └── install-to-repo.sh
+├── vendor/qsm-marketplace/           Only 3 files in the consumer repo.
+│   └── plugins/                      Workflows clone this bot repo at
+│       ├── strict-review/            CI runtime — submodule and all.
+│       └── qsm-git-tools/
+│
+├── docs/
+│   └── github-review-api.md
+│
+├── scripts/
+│   ├── setup.ts / setup.sh           ← interactive setup (creates GitHub App)
+│   └── install-to-repo.sh            ← quick file copy if secrets already configured
+│
+└── .cc-review.yaml                   ← config template
 ```
+
+`vendor/qsm-marketplace` is a git submodule pinned to a specific SHA. Bumping it = bumping the review pipeline.
 
 ---
 
-## Review CLI
-
-> **Principle: Walls > Instructions.** Everything deterministic is enforced outside the model.
-
-The model never calls `gh pr review` or raw GitHub API endpoints. All review operations go through `review-cli.ts` — a PreToolUse hook blocks any attempt to bypass it.
-
-```
-review-cli.ts <command> --repo owner/repo --pr N [options]
-```
-
-| Command | What it does |
-|---------|-------------|
-| **`post`** | Resolve findings to diff lines, build payload, post review |
-| **`approve`** | Approve PR (refuses if unresolved threads exist) |
-| **`status`** | Latest review state + unresolved thread count |
-| **`list`** | List all reviews on a PR |
-| **`resolve`** | Resolve a review thread via GraphQL |
-
-<details>
-<summary><strong>Why not let the model call the API directly?</strong></summary>
-
-<br />
-
-Models hallucinate line numbers, post multiple partial reviews, and skip safety checks before approving. The CLI makes these mistakes structurally impossible:
-
-- **Line resolution** — Model writes a search string, CLI finds the exact diff line
-- **Single review** — CLI bundles all inline comments into one payload
-- **Approval guard** — CLI queries GraphQL for unresolved threads first
-- **Enforcement** — `enforce-review-cli.ts` hook blocks `gh pr review`, direct API `POST`s to the reviews endpoint, and raw GraphQL review mutations
-
-</details>
-
----
-
-## Quick Setup
+## Setup
 
 ### Prerequisites
 
-- [GitHub CLI](https://cli.github.com/) (`gh`) — installed and authenticated
-- [Claude Code](https://claude.ai/code) — logged into your Max account
+- [GitHub CLI](https://cli.github.com/) installed and authenticated
+- [Claude Code](https://claude.ai/code) signed in to a Max account
 - Admin access to the target repository
 
 ### One-liner
 
 ```bash
-git clone https://github.com/Questi0nM4rk/cc-review.git && cd cc-review && ./scripts/setup.sh
+git clone --recurse-submodules https://github.com/Questi0nM4rk/cc-review.git
+cd cc-review && ./scripts/setup.sh
 ```
 
-<details>
-<summary><strong>Manual setup steps</strong></summary>
+The interactive setup creates a GitHub App, requests its install on the target repo, stores secrets, and pushes the workflow files. See `scripts/setup.ts` for the flow.
 
-#### 1. Generate Claude OAuth Token
-```bash
-claude setup-token
-```
-Copy the `sk-ant-oat01-...` token. Valid for 1 year.
+### One-time prerequisites for the bot's App
 
-#### 2. Create a GitHub App
+The GitHub App generated by setup must be installed on **three** repos:
 
-Go to [github.com/settings/apps/new](https://github.com/settings/apps/new):
+| Repo | Why |
+|---|---|
+| Your target repo (e.g. `you/your-app`) | So the bot can read the PR, post reviews, and push to the memory branch. |
+| `Questi0nM4rk/cc-review` | So CI can clone this bot's intelligence at runtime. |
+| `Questi0nM4rk/qsm-marketplace` | So CI can pull the marketplace submodule (private repo). |
 
-| Setting | Value |
-|---------|-------|
-| Name | `your-team-reviewer` |
-| Webhooks | Uncheck "Active" |
-| Permissions | Contents (R/W), Issues (R/W), Pull requests (R/W) |
-| Install scope | Only on this account |
+Setup installs on the target repo automatically. You install on `cc-review` and `qsm-marketplace` once via the App's installation page.
 
-After creating: note the **App ID**, generate a **private key** (`.pem`), and **install** on your repo.
+### Required secrets
 
-#### 3. Add Secrets
+Stored on the target repo:
 
 | Secret | Value |
-|--------|-------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | The `sk-ant-oat01-...` token |
+|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | `sk-ant-oat01-...` from `claude setup-token` (1-year lifetime) |
 | `REVIEWER_APP_ID` | Numeric App ID |
 | `REVIEWER_APP_PRIVATE_KEY` | Full `.pem` file contents |
-
-#### 4. Install
-
-```bash
-./scripts/install-to-repo.sh /path/to/your/repo
-cd /path/to/your/repo
-git add -A && git commit -m "Add cc-review bot" && git push
-```
-
-</details>
 
 ---
 
 ## Configuration
 
-Create `.cc-review.yaml` in your repo root:
+`.cc-review.yaml` in your repo root:
 
 ```yaml
 version: 1
-mode: standard            # standard | strict | bug-hunt | simplify
-auto_review: true         # Review on PR open
+auto_review: true       # review on PR open; false → manual trigger only
 
 languages:
   - python
@@ -210,59 +147,44 @@ instructions: |
 
 known_patterns:
   - "We use broad exception handlers in middleware intentionally"
-
-slop_detection: true      # AI-generated code detection
-memory: true              # Learn from past reviews
 ```
+
+The strict-review research phase reads this file and uses it to focus the scanners.
 
 ---
 
-## Review Modes
+## Triggers
 
-| Mode | Trigger | Focus |
-|:-----|:--------|:------|
-| **standard** | PR open *(default)* | Bugs, security, logic errors |
-| **strict** | Label `strict` / manual | Zero-tolerance — every finding is a required change |
-| **bug-hunt** | Label `bug-hunt` / manual | Logic errors, edge cases, integration bugs |
-| **simplify** | Label `simplify` / manual | Code reuse, quality, efficiency |
+| Trigger | Effect |
+|---|---|
+| `pull_request: opened` | Auto-review when `auto_review: true` |
+| Label `cc-review` added to PR | Re-run review |
+| Label `no-review` on PR | Skip auto-review |
+| `@cc-review` comment on PR | Interactive — runs strict-review or answers a question |
+| Workflow dispatch with `pr_number` | Manual review on a specific PR |
 
 ### Interactive
 
-Comment on any PR to talk to the bot:
-
 ```
-@cc-review                          # standard review
-@cc-review bug-hunt this            # deep bug hunting
-@cc-review what does this change?   # explain the PR
+@cc-review                          # run strict-review on this PR
+@cc-review what does this change?   # explain the diff, no review posted
+@cc-review re-check the auth path   # review with extra focus
 ```
 
----
-
-## Agents
-
-Specialized subagents are deployed depending on the review mode:
-
-| Agent | Mode | Focus |
-|:------|:-----|:------|
-| **slop-researcher** | *all* | AI-generated code patterns |
-| **logic-bug-scanner** | bug-hunt | Deep logic error analysis |
-| **edge-case-scanner** | bug-hunt | Boundaries, off-by-one, null handling |
-| **integration-bug-scanner** | bug-hunt | Cross-component interaction bugs |
-| **code-quality-scanner** | simplify | Dead code, complexity, naming |
-| **code-reuse-scanner** | simplify | Duplication and abstraction |
-| **efficiency-scanner** | simplify | Performance and resource usage |
+The user message between `@cc-review` and end-of-comment is treated as untrusted input — the bot is instructed not to follow embedded directives that override the review pipeline.
 
 ---
 
 ## Memory
 
-The bot maintains a persistent memory branch (`claude-reviewer/memory`) in the target repo when `memory: true`. It learns:
+Each consumer repo accumulates state on its own `claude-reviewer/memory` orphan branch:
 
-- **False positives** specific to your codebase
-- **Bug patterns** your code is prone to
-- **Conventions** and architectural decisions
+- `MEMORY.md` — long-form learned context (false positives, conventions, recurring bug patterns)
+- `REVIEW_LOG.md` — last review's full output (overwritten each run)
 
-Memory is loaded before every review and updated when the bot learns something new.
+Memory is loaded into the workflow before each review and committed back after. The memory branch never appears in PR diffs or working-tree branches.
+
+> Cross-project memory (one global branch on the bot repo with `<owner>/<repo>/` folders) is on the roadmap — see [issue tracker](https://github.com/Questi0nM4rk/cc-review/issues).
 
 ---
 
@@ -271,202 +193,39 @@ Memory is loaded before every review and updated when the bot learns something n
 <details>
 <summary>Bot not reviewing</summary>
 
-- Check the Actions tab — is the workflow running?
-- Verify all 3 secrets are set correctly
-- Check the GitHub App is installed on the repo
+- Actions tab — is the workflow running at all? Check `cc-review.yml` is present in `.github/workflows/`.
+- Verify all 3 secrets are set on the target repo.
+- Verify the GitHub App is installed on the target repo, `cc-review`, AND `qsm-marketplace`.
 </details>
 
 <details>
-<summary>Bot can't approve</summary>
+<summary>Submodule clone fails with 404</summary>
 
-- The GitHub App must be a different identity from the PR author
-- Verify the App has `pull-requests: write` permission
+The App isn't installed on `Questi0nM4rk/qsm-marketplace`. Visit the App's installation settings and add it.
+</details>
+
+<details>
+<summary>Bot can't approve / unresolved threads</summary>
+
+The `qsm-strict-review` synthesizer refuses to approve while review threads are unresolved. Resolve them in the PR UI, then re-trigger by re-applying the `cc-review` label.
 </details>
 
 <details>
 <summary>OAuth token expired</summary>
 
-Tokens last 1 year. Regenerate with `claude setup-token`.
+`CLAUDE_CODE_OAUTH_TOKEN` lasts 1 year. Regenerate with `claude setup-token` and update the repo secret.
 </details>
 
 <details>
-<summary>Review is too strict / too lenient</summary>
+<summary>Review missed something / too noisy</summary>
 
-- Change `mode` in `.cc-review.yaml`
-- Add project-specific `instructions` and `known_patterns`
+- Add the false-positive pattern to `known_patterns` in `.cc-review.yaml`
+- Add project conventions to `instructions`
+- Both feed into strict-review's research phase
 </details>
 
 ---
 
 <p align="center">
-  <sub>Built with <a href="https://claude.ai/code">Claude Code</a></sub>
+  <sub>Built on <a href="https://claude.ai/code">Claude Code</a> + <a href="https://github.com/Questi0nM4rk/qsm-marketplace">qsm-marketplace</a></sub>
 </p>
-
----
-
-<!-- CLAUDE.md — This section is symlinked as .claude/CLAUDE.md for Claude Code guidance -->
-
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Build & Test
-
-All scripts are TypeScript run via `tsx`. No package.json — tsx is installed globally (`npm install -g tsx`).
-
-```bash
-# Integration tests (hooks + review payload validation)
-bash tests/integration/run.sh
-
-# Integration tests in Docker (matches CI environment)
-docker build -f tests/integration/Dockerfile -t cc-review-test . && docker run --rm cc-review-test
-
-# Test a hook manually (pipe JSON to stdin, read decision from stdout)
-echo '{"tool_name":"Bash","tool_input":{"command":"gh pr review 42"}}' | tsx .claude/hooks/scripts/enforce-review-cli.ts
-
-# Dry-run a review post (validates findings + line resolution without hitting GitHub API)
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo owner/repo --pr 1 --diff /tmp/pr-diff.txt --findings - --dry-run <<'FINDINGS_EOF'
-{"summary":"Test review","findings":[{"file":"src/foo.ts","search":"pattern","body":"Issue."}]}
-FINDINGS_EOF
-
-# Interactive setup — creates GitHub App, stores secrets, deploys workflows to a target repo
-npx tsx scripts/setup.ts owner/repo-name
-```
-
-## Key Architecture Concepts
-
-**This repo is a Claude Code plugin, not a standalone app.** The `.claude/` directory is cloned into target repos at CI runtime. Target repos only store 3 files: two workflow YAMLs + `.cc-review.yaml`.
-
-### Walls > Instructions
-
-Deterministic enforcement lives outside the model. The model is never trusted to call the right API:
-
-- **`enforce-review-cli.ts`** (PreToolUse hook) — Blocks `gh pr review`, direct `POST` to reviews endpoint, raw GraphQL review mutations. Only allows `review-cli.ts` and `diff-lines.ts`.
-- **`review-cli.ts`** — Single entry point for all review operations. Resolves line numbers (model writes a search string, CLI finds the diff line), bundles all comments into one payload, guards approval behind unresolved thread checks.
-- **`diff-lines.ts`** — Parses unified diff → JSON array of commentable lines. Used internally by review-cli.ts.
-
-### Hook Runtime
-
-`hooks/lib/hook-runtime.ts` provides shared primitives: `readHookInput()` reads Claude's JSON from stdin, `allow()`/`block(reason)` write the decision to stdout and exit. Hooks registered in both `hooks/hooks.json` and `settings.json` (both deployed to target repos).
-
-### Review Flow
-
-Commands (`review-pr.md`, `bug-hunt.md`, `simplify-review.md`) define methodology. Each:
-1. Loads memory from `claude-reviewer/memory` orphan branch + `.cc-review.yaml`
-2. Reads pre-fetched diff from `/tmp/pr-diff.txt` (CI pre-fetches to save model turns)
-3. Optionally deploys mode-specific subagents in parallel
-4. Pipes findings JSON via stdin to `review-cli.ts post`
-
-### Subagent Deployment by Mode
-
-- **standard/strict** — No subagents, main agent reviews directly
-- **bug-hunt** — `logic-bug-scanner`, `edge-case-scanner`, `integration-bug-scanner`
-- **simplify** — `code-reuse-scanner`, `code-quality-scanner`, `efficiency-scanner`
-- **all modes** — `slop-researcher` runs first when `slop_detection: true` and diff < 500 lines
-
-### Two Workflow Entry Points
-
-- **`cc-review.yml`** — PR open, label add, manual dispatch → runs review command matching the mode
-- **`cc-review-interactive.yml`** — `@cc-review` comments → parses user message, routes to command or responds directly
-
-Both: clone bot repo → copy `.claude/` into target → pre-fetch diff → `claude -p` with scoped `--allowedTools`.
-
-## Bot Runtime Instructions
-
-You are an automated code reviewer operating as a GitHub bot.
-
-### Identity
-
-- You are a code review bot, not a human developer
-- You post reviews via `review-cli.ts` — NEVER use `gh pr review` or raw `gh api` directly
-- All inline comments MUST be inside the `comments` array of a single review — never separate API calls
-- Be concise and direct — developers read dozens of reviews
-
-### Project Configuration
-
-Before reviewing, read the project's `.cc-review.yaml` config file:
-```bash
-cat .cc-review.yaml 2>/dev/null || echo "No project config — using defaults."
-```
-
-Apply the config:
-- **mode**: Determines review style (standard, strict, bug-hunt, simplify)
-- **languages**: Focus language-specific patterns from `.claude/skills/review-guidelines/references/`
-- **ignore_paths**: Skip files matching these globs
-- **instructions**: Additional project-specific review context
-- **known_patterns**: Treat these as false positives — skip them
-- **slop_detection**: Whether to deploy the slop-researcher agent
-
-### Project Memory
-
-Persistent memory stored on the `claude-reviewer/memory` branch.
-
-**Before every review**, load memory:
-```bash
-git show claude-reviewer/memory:MEMORY.md 2>/dev/null
-```
-
-Use memory to skip known false positives and focus on patterns this codebase is prone to.
-
-**After every review**, evaluate if you learned something new. If so, save using `.claude/commands/memory-save.md`. Merge new insights — don't overwrite. Keep under 200 lines.
-
-### Pre-Review Research
-
-If slop detection is enabled (default), deploy the `slop-researcher` agent with the PR diff and file list. It returns a targeted watchlist of AI-generated code patterns specific to the PR's languages and domain.
-
-### Review CLI — The ONLY Way to Interact with Reviews
-
-All review operations MUST use the review CLI. Direct `gh pr review` and `gh api .../reviews --method POST` calls are blocked by the enforcement hook.
-
-```bash
-# Post a review — pipe findings JSON via stdin (--findings -)
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts post --repo OWNER/REPO --pr N --diff /tmp/pr-diff.txt --findings - <<'FINDINGS_EOF'
-{"summary":"Review summary.","findings":[{"file":"src/foo.ts","search":"pattern","body":"Issue."}]}
-FINDINGS_EOF
-
-# Approve a PR (refuses if unresolved threads exist)
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts approve --repo OWNER/REPO --pr N
-
-# Check review status + unresolved thread count
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts status --repo OWNER/REPO --pr N
-
-# List all reviews
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts list --repo OWNER/REPO --pr N
-
-# Resolve a review thread after fixing the issue
-tsx .claude/skills/review-guidelines/scripts/review-cli.ts resolve --repo OWNER/REPO --pr N --thread-id NODE_ID
-```
-
-NEVER use `gh pr review` or `gh api .../reviews --method POST` directly.
-
-### Available Review Modes
-
-| Mode | Focus |
-|------|-------|
-| standard | Bugs, security, logic errors (default) |
-| strict | Zero-tolerance — every finding is a required change |
-| bug-hunt | Deep bug hunting — logic, edge cases, integration |
-| simplify | Code reuse, quality, efficiency |
-
-### Turn Budget
-
-You have a limited number of turns. Be efficient:
-- Do NOT read files that aren't in the diff unless verifying a specific finding
-- For large diffs (>500 lines), skip slop research — go straight to review
-- Memory and review logs are saved automatically by the workflow after your session ends — do NOT spend turns on memory-save
-- Once you post the review, STOP. Your job is done.
-
-### DON'Ts
-
-- Do NOT use `gh pr review` — always use review-cli.ts
-- Do NOT use `gh api .../reviews --method POST` directly — always use review-cli.ts post
-- Do NOT post inline comments via separate API calls — the CLI bundles everything
-- Do NOT post more than ONE review — after posting, STOP immediately
-- Do NOT "test" the API — post the real review on your first and only call
-- Do NOT use severity labels (Critical, High, Medium, Low, etc.) — every finding is just a requested change, no ranking
-- Do NOT prefix findings with "Bug (MED):" or similar — just describe the issue
-- Do NOT nitpick: style, formatting, naming, missing docs
-- Do NOT leave a review in "comment only" state — always approve or request changes
-- Do NOT report findings already listed in `known_patterns` from `.cc-review.yaml`
-- Do NOT report patterns listed as false positives in project memory
-- Do NOT post comments with null or invalid line numbers — if you can't map to a diff line, put the finding in the review body

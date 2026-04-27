@@ -1,0 +1,3 @@
+[submodule "vendor/qsm-marketplace"]
+	path = vendor/qsm-marketplace
+	url = https://github.com/Questi0nM4rk/qsm-marketplace.git

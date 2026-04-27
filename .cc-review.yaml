@@ -4,19 +4,18 @@
 
 version: 1
 
-# Review mode on PR open: standard | strict | bug-hunt | simplify
-mode: standard
-
-# Automatically review when PRs are opened
+# Automatically review when PRs are opened. Set to false to require the
+# `cc-review` label or workflow_dispatch to trigger a review.
 auto_review: true
 
-# Primary languages in this project (focuses review patterns)
+# Primary languages in this project. Strict-review's research phase uses
+# this to load language-specific pattern references.
 languages: []
 #  - python
 #  - csharp
 #  - typescript
 
-# Paths to skip during review (glob patterns)
+# Paths to skip during review (glob patterns).
 ignore_paths: []
 #  - "docs/**"
 #  - "*.md"
@@ -24,7 +23,7 @@ ignore_paths: []
 #  - "**/__snapshots__/**"
 #  - "vendor/**"
 
-# Custom review instructions (appended to the review prompt)
+# Custom review instructions (appended to the review prompt).
 # Use this for project-specific conventions the reviewer should know.
 instructions: ""
 #  instructions: |
@@ -32,14 +31,8 @@ instructions: ""
 #    Pay special attention to async/await patterns.
 #    All database operations must use transactions.
 
-# Known patterns to skip (prevents false positives)
+# Known patterns to skip (prevents false positives).
 # Add patterns the reviewer keeps flagging that are intentional in your project.
 known_patterns: []
 #  - "We intentionally use broad exception handlers in middleware"
 #  - "Task.Run is used for CPU-bound work in this project"
-
-# Slop detection — scan for AI-generated code patterns
-slop_detection: true
-
-# Persistent memory across reviews (uses orphan git branch)
-memory: true
