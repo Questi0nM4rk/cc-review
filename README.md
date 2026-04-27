@@ -175,16 +175,52 @@ The user message between `@cc-review` and end-of-comment is treated as untrusted
 
 ---
 
-## Memory
+## Memory and transcripts
 
-Each consumer repo accumulates state on its own `claude-reviewer/memory` orphan branch:
+Two separate orphan branches with very different purposes:
 
-- `MEMORY.md` — long-form learned context (false positives, conventions, recurring bug patterns)
-- `REVIEW_LOG.md` — last review's full output (overwritten each run)
+### Project memory — `cc-review:claude-reviewer/memory`
 
-Memory is loaded into the workflow before each review and committed back after. The memory branch never appears in PR diffs or working-tree branches.
+Global, append-forever, segregated by `<owner>/<repo>/`. Consumer repos never see this branch:
 
-> Cross-project memory (one global branch on the bot repo with `<owner>/<repo>/` folders) is on the roadmap — see [issue tracker](https://github.com/Questi0nM4rk/cc-review/issues).
+```
+cc-review @ claude-reviewer/memory
+├── README.md
+├── Questi0nM4rk/ai-guardrails/
+│   ├── MEMORY.md         long-form learned context — what to focus on, what's intentional, recurring patterns
+│   ├── REVIEW_LOG.md     last review's human-readable output (overwritten each run)
+│   ├── reviews/          past PR review bodies (read-only context for future reviews)
+│   ├── advice/           past research-phase advice (read-only context)
+│   └── notes/            bot self-improvement notes
+└── Questi0nM4rk/<other-repo>/
+    └── …
+```
+
+Before every review, the workflow extracts only this consumer's slice into `/tmp/memory/` and exposes it to the model. The model can update `MEMORY.md` and write `notes/` during the review; after, the workflow pushes the slice back. Cross-repo write races are mitigated with a per-repo concurrency group plus a 3-attempt retry.
+
+### Run transcripts — `<consumer>:claude-reviewer/transcripts`
+
+Per-PR, last-run-only, lives on the **consumer** repo (so you can audit what the bot did on your PR without leaving the repo):
+
+```
+ai-guardrails @ claude-reviewer/transcripts
+├── README.md
+├── PR-141/
+│   ├── session.jsonl     full Claude session (overwritten on each run for PR-141)
+│   └── meta.json         status, run URL, date
+├── PR-143/
+│   └── …
+```
+
+Different PRs get sibling folders; multiple runs on the same PR overwrite each other. Use these to debug "why did the bot post that?" without re-running.
+
+### What you'd typically check
+
+| Question | Where to look |
+|---|---|
+| What does the bot think it knows about my project? | `cc-review:claude-reviewer/memory` → `<your>/<repo>/MEMORY.md` |
+| Why did it flag X on PR #141? | `<your-repo>:claude-reviewer/transcripts` → `PR-141/session.jsonl` |
+| What did past reviews say? | `cc-review:claude-reviewer/memory` → `<your>/<repo>/reviews/` |
 
 ---
 

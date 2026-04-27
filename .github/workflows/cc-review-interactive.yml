@@ -6,6 +6,10 @@ on:
   pull_request_review_comment:
     types: [created]
 
+concurrency:
+  group: cc-review-memory-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   respond:
     runs-on: ubuntu-latest
@@ -106,6 +110,25 @@ jobs:
 
           echo "Diff: $(wc -l < /tmp/pr-diff.txt) lines, $(jq '.files | length' /tmp/pr-meta.json) files"
 
+      - name: Pre-fetch project memory
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          BOT_DIR=/tmp/cc-review-bot
+          mkdir -p /tmp/memory
+
+          if git -C "$BOT_DIR" fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null; then
+            git -C "$BOT_DIR" archive claude-reviewer/memory "${REPO}/" 2>/dev/null \
+              | tar -x -C /tmp/memory --strip-components=2 2>/dev/null || true
+          fi
+
+          if [ ! -f /tmp/memory/MEMORY.md ]; then
+            printf '%s\n\n%s\n' "# Project Memory: ${REPO}" "(empty — populated as the bot learns)" > /tmp/memory/MEMORY.md
+          fi
+          mkdir -p /tmp/memory/notes /tmp/memory/reviews /tmp/memory/advice
+
+          echo "Memory: $(find /tmp/memory -type f | wc -l) files"
+
       - name: Install Claude Code
         run: |
           npm install -g tsx
@@ -135,6 +158,12 @@ jobs:
             printf '%s\n' "  /tmp/pr-meta.json   PR title, body, author, files"
             printf '%s\n' "  /tmp/pr-diff.txt    full diff"
             printf '%s\n' ""
+            printf '%s\n' "Project memory at /tmp/memory/ (read AND writable):"
+            printf '%s\n' "  MEMORY.md   long-form learnings — read for context, append/edit if you discover something the next review should know"
+            printf '%s\n' "  notes/      bot self-improvement notes"
+            printf '%s\n' "  reviews/    past PR reviews (read-only context)"
+            printf '%s\n' "  advice/    past research-phase advice (read-only context)"
+            printf '%s\n' ""
             printf '%s\n' "If .cc-review.yaml exists at the repo root, read it for"
             printf '%s\n' "project-specific languages, ignore_paths, instructions, and known_patterns."
             printf '%s\n' ""
@@ -155,65 +184,128 @@ jobs:
           claude -p \
             --max-turns 200 \
             --model claude-sonnet-4-6 \
-            --output-format text \
+            --output-format stream-json \
+            --verbose \
             --plugin-dir "${MARKETPLACE}/strict-review" \
             --plugin-dir "${MARKETPLACE}/qsm-git-tools" \
-            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Bash(tsx:*),Bash(jq:*),Bash(node:*),Read,Glob,Grep,Agent,WebSearch,WebFetch" \
-            < /tmp/prompt.txt | tee /tmp/review-output.txt
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cat:*),Bash(npx:*),Bash(tsx:*),Bash(jq:*),Bash(node:*),Read,Write,Edit,Glob,Grep,Agent,WebSearch,WebFetch" \
+            < /tmp/prompt.txt | tee /tmp/session.jsonl
 
-      - name: Save review log to memory branch
+          jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text' \
+            /tmp/session.jsonl > /tmp/review-output.txt 2>/dev/null || true
+
+      - name: Save project memory and transcript
         if: always()
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ steps.extract.outputs.pr_number }}
           REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.extract.outputs.pr_number }}
           REVIEW_STATUS: ${{ steps.review.outcome }}
           RUN_ID: ${{ github.run_id }}
         run: |
+          BOT_DIR=/tmp/cc-review-bot
+          SLICE="${REPO}"
+
+          cd "$BOT_DIR"
+          git config user.name "cc-review[bot]"
+          git config user.email "cc-review[bot]@users.noreply.github.com"
+          git checkout --detach 2>/dev/null || true
+
+          memory_push() {
+            git fetch origin claude-reviewer/memory 2>/dev/null || true
+            if git rev-parse --verify origin/claude-reviewer/memory >/dev/null 2>&1; then
+              git checkout -B claude-reviewer/memory origin/claude-reviewer/memory
+            else
+              git checkout --orphan claude-reviewer/memory
+              git rm -rf . 2>/dev/null || true
+              printf '%s\n\n%s\n' "# cc-review memory" "Per-project review state. Each top-level directory is one consumer repository (\`<owner>/<repo>/\`)." > README.md
+              git add README.md
+              git commit -m "Initialize memory branch"
+            fi
+
+            mkdir -p "${SLICE}"
+            rm -rf "${SLICE}/MEMORY.md" "${SLICE}/notes" "${SLICE}/advice" "${SLICE}/reviews" 2>/dev/null || true
+            cp -r /tmp/memory/. "${SLICE}/" 2>/dev/null || true
+
+            {
+              printf '%s\n' "# Last Review Log — PR #${PR_NUMBER} (interactive)"
+              printf '%s\n' ""
+              printf '%s\n' "| Field | Value |"
+              printf '%s\n' "|-------|-------|"
+              printf '%s\n' "| Status | ${REVIEW_STATUS} |"
+              printf '%s\n' "| Date | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+              printf '%s\n' "| Run | https://github.com/${REPO}/actions/runs/${RUN_ID} |"
+              printf '%s\n' ""
+              printf '%s\n' "## Claude Output"
+              printf '%s\n' ""
+              printf '%s\n' '```'
+              cat /tmp/review-output.txt 2>/dev/null || echo "No output captured"
+              printf '%s\n' '```'
+            } > "${SLICE}/REVIEW_LOG.md"
+
+            git add "${SLICE}/"
+            if git diff --cached --quiet; then
+              echo "No memory changes."
+              return 0
+            fi
+            git commit -m "Update memory for ${REPO} PR #${PR_NUMBER} (interactive)"
+            git push origin claude-reviewer/memory
+          }
+
+          for attempt in 1 2 3; do
+            if memory_push; then
+              break
+            fi
+            echo "Memory push attempt $attempt failed; sleeping then retrying..."
+            sleep $((attempt * 5))
+          done
+
+          cd "$GITHUB_WORKSPACE"
           git config user.name "cc-review[bot]"
           git config user.email "cc-review[bot]@users.noreply.github.com"
 
-          git fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null || true
+          git reset --hard HEAD 2>/dev/null || true
+          git clean -fdx 2>/dev/null || true
 
-          if git rev-parse --verify claude-reviewer/memory 2>/dev/null; then
-            git checkout claude-reviewer/memory
-          else
-            git checkout --orphan claude-reviewer/memory
-            git reset --hard
-          fi
+          transcript_push() {
+            git fetch origin claude-reviewer/transcripts 2>/dev/null || true
+            if git rev-parse --verify origin/claude-reviewer/transcripts >/dev/null 2>&1; then
+              git checkout -B claude-reviewer/transcripts origin/claude-reviewer/transcripts
+            else
+              git checkout --orphan claude-reviewer/transcripts
+              git rm -rf . 2>/dev/null || true
+              git clean -fdx 2>/dev/null || true
+              printf '%s\n\n%s\n' "# cc-review transcripts" "JSONL chat transcripts for the most recent run on each PR. Updated in place — only the last run per PR is kept." > README.md
+              git add README.md
+              git commit -m "Initialize transcripts branch"
+            fi
 
-          {
-            printf '%s\n' "# Last Review Log"
-            printf '%s\n' ""
-            printf '%s\n' "| Field | Value |"
-            printf '%s\n' "|-------|-------|"
-            printf '%s\n' "| Repository | ${REPO} |"
-            printf '%s\n' "| PR | #${PR_NUMBER} |"
-            printf '%s\n' "| Mode | interactive |"
-            printf '%s\n' "| Status | ${REVIEW_STATUS} |"
-            printf '%s\n' "| Date | $(date -u '+%Y-%m-%d %H:%M UTC') |"
-            printf '%s\n' "| Run | https://github.com/${REPO}/actions/runs/${RUN_ID} |"
-            printf '%s\n' ""
-            printf '%s\n' "## Claude Output"
-            printf '%s\n' ""
-            printf '%s\n' '```'
-            cat /tmp/review-output.txt 2>/dev/null || echo "No output captured"
-            printf '%s\n' '```'
-          } > REVIEW_LOG.md
+            mkdir -p "PR-${PR_NUMBER}"
+            cp /tmp/session.jsonl "PR-${PR_NUMBER}/session.jsonl" 2>/dev/null || true
+            {
+              printf '%s\n' "{"
+              printf '  "pr": %s,\n' "${PR_NUMBER}"
+              printf '  "status": "%s",\n' "${REVIEW_STATUS}"
+              printf '  "date": "%s",\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              printf '  "run_url": "https://github.com/%s/actions/runs/%s"\n' "${REPO}" "${RUN_ID}"
+              printf '%s\n' "}"
+            } > "PR-${PR_NUMBER}/meta.json"
 
-          if [ ! -f MEMORY.md ]; then
-            printf '%s\n' "# Project Memory" > MEMORY.md
-            printf '%s\n' "" >> MEMORY.md
-            printf '%s\n' "No insights yet — memory will be populated after meaningful reviews." >> MEMORY.md
-          fi
+            git add "PR-${PR_NUMBER}/"
+            if git diff --cached --quiet; then
+              echo "No transcript changes."
+              return 0
+            fi
+            git commit -m "Update transcript for PR #${PR_NUMBER}"
+            git push origin claude-reviewer/transcripts
+          }
 
-          git add MEMORY.md REVIEW_LOG.md
-          if ! git diff --cached --quiet; then
-            git commit -m "Update review log for PR #${PR_NUMBER} (interactive)"
-            git push origin claude-reviewer/memory
-          fi
-
-          git checkout - 2>/dev/null || true
+          for attempt in 1 2 3; do
+            if transcript_push; then
+              break
+            fi
+            echo "Transcript push attempt $attempt failed; sleeping then retrying..."
+            sleep $((attempt * 5))
+          done
 
       - name: Update status comment
         if: always()
