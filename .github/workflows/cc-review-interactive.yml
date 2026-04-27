@@ -9,7 +9,10 @@ on:
 jobs:
   respond:
     runs-on: ubuntu-latest
-    if: contains(github.event.comment.body, '@cc-review')
+    if: |
+      contains(github.event.comment.body, '@cc-review') &&
+      (github.event_name == 'pull_request_review_comment' ||
+       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null))
     timeout-minutes: 15
 
     permissions:
@@ -51,8 +54,21 @@ jobs:
         id: extract
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_PR_NUMBER: ${{ github.event.issue.number }}
+          REVIEW_COMMENT_PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          PR_NUMBER="${{ github.event.issue.number }}"
+          if [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
+            PR_NUMBER="$REVIEW_COMMENT_PR_NUMBER"
+          else
+            PR_NUMBER="$ISSUE_PR_NUMBER"
+          fi
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::Could not determine PR number for event '$EVENT_NAME'"
+            exit 1
+          fi
+
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
           USER_MSG="${COMMENT_BODY#*@cc-review}"
