@@ -226,7 +226,7 @@ const reviewPostPrompt = (ctx) =>
 
 const memoryPrompt = (ctx) =>
   `Update palace-structured project memory under /tmp/memory ONLY if that directory exists (GitHub bot mode). If it does not exist, do nothing and say 'no memory dir (local mode)'.\n` +
-  `Use bash for ALL file operations (test -d /tmp/memory, mkdir -p, printf >>, cat) — do NOT use the Read/Write/Edit tools, which are restricted to the repo workspace and cannot touch /tmp/memory.\n` +
+  `Check existence with 'cat /tmp/memory/MEMORY.md' (if it errors, the dir is absent -> local mode). The /tmp/memory and /tmp/memory/learnings dirs are pre-created. Append ONLY with 'cat >> <path> <<\\'EOF\\' ... EOF' — cat is the only file-writing command available; do NOT use mkdir, printf, tee, or the Read/Write/Edit tools (they are blocked for /tmp).\n` +
   `Layout (create files as needed, never delete content):\n` +
   `  MEMORY.md                      overall index — what this repo is, recurring themes\n` +
   `  learnings/lessons.md           durable lessons for future reviews\n` +
