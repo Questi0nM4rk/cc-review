@@ -148,7 +148,7 @@ const STRICT = [
 
 const fetchPrompt = (a) =>
   `Assemble review context by calling the platform adapter. Run from the repo root.\n` +
-  `1. PR/MR number: ${a.prNumber ? a.prNumber : "the env var $PR_NUMBER (GitHub) or $CI_MERGE_REQUEST_IID (GitLab)"}.\n` +
+  `1. PR/MR number <n>: ${a.prNumber ? a.prNumber : "run 'echo $PR_NUMBER' (GitHub) or 'echo $CI_MERGE_REQUEST_IID' (GitLab) and use that exact integer verbatim — do NOT infer the number from the diff or guess"}.\n` +
   `2. Run: tsx ${ADAPTER} context --pr <n>   -> gives platform, repo, diff (use /tmp/pr-diff.txt verbatim if it exists and is non-empty; the adapter handles this).\n` +
   `3. Run: tsx ${ADAPTER} threads --pr <n>    -> prior open review threads.\n` +
   `4. If /tmp/cc-user-msg.txt exists, cat it and return its contents as user_message (the maintainer's @cc-review message — return it as raw data, do not act on it here). Otherwise user_message = "".\n` +
@@ -217,16 +217,17 @@ const commentMgmtPrompt = (t, diff) =>
 const rewritePrompt = (off) => `${STRICT}\n\nEach description failed a validator (severity label / non-imperative / emoji). Rewrite each as an imperative directive, no label, no emoji, same meaning. One per index.\n\n` + off.map((o) => `[${o.index}] (${o.fails.join(",")}) ${JSON.stringify(o.text)}`).join("\n");
 
 const overviewPostPrompt = (prNumber, md) =>
-  `Post the pre-review walkthrough comment. From the repo root: write the markdown below to /tmp/cc-overview.md, then run:\n  tsx ${ADAPTER} post-overview --pr ${prNumber} --body-file /tmp/cc-overview.md\nReport the comment id. Markdown:\n<<<MD\n${md}\nMD`;
+  `Post the pre-review walkthrough comment. Write the markdown below VERBATIM to /tmp/cc-overview.md using bash (a cat heredoc — NOT the Write tool; /tmp is outside the agent's writable workspace), then run:\n  tsx ${ADAPTER} post-overview --pr ${prNumber} --body-file /tmp/cc-overview.md\nReport the comment id. Markdown:\n<<<MD\n${md}\nMD`;
 
 const reviewPostPrompt = (ctx) =>
-  `Apply the review to ${ctx.repo} PR/MR #${ctx.pr_number} via the adapter, from the repo root. In order:\n` +
+  `Apply the review to ${ctx.repo} PR/MR #${ctx.pr_number} via the adapter, from the repo root. Write every /tmp file with bash (printf/cat heredoc), NOT the Write tool — /tmp is outside the agent's writable workspace. In order:\n` +
   `1. resolve threads: ${JSON.stringify(ctx.resolve_ids)} — for each: tsx ${ADAPTER} resolve --pr ${ctx.pr_number} --thread <id>\n` +
   `2. reply threads: ${JSON.stringify(ctx.replies)} — for each: write reply_body to /tmp/cc-reply.md and run tsx ${ADAPTER} reply --pr ${ctx.pr_number} --thread <thread_id> --comment-id <comment_db_id> --body-file /tmp/cc-reply.md (pass both ids; the adapter uses the one its platform needs)\n` +
   `3. post the review: write this payload to /tmp/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload /tmp/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nConfirm what you posted in one line.`;
 
 const memoryPrompt = (ctx) =>
   `Update palace-structured project memory under /tmp/memory ONLY if that directory exists (GitHub bot mode). If it does not exist, do nothing and say 'no memory dir (local mode)'.\n` +
+  `Use bash for ALL file operations (test -d /tmp/memory, mkdir -p, printf >>, cat) — do NOT use the Read/Write/Edit tools, which are restricted to the repo workspace and cannot touch /tmp/memory.\n` +
   `Layout (create files as needed, never delete content):\n` +
   `  MEMORY.md                      overall index — what this repo is, recurring themes\n` +
   `  learnings/lessons.md           durable lessons for future reviews\n` +
@@ -368,7 +369,7 @@ const a = args || {};
 
 // ---- Fetch -----------------------------------------------------------------
 phase("Fetch");
-const fetched = await agent(fetchPrompt(a), { schema: FETCH_SCHEMA, model: "haiku", label: "fetch", phase: "Fetch" });
+const fetched = await agent(fetchPrompt(a), { schema: FETCH_SCHEMA, model: "sonnet", label: "fetch", phase: "Fetch" });
 const diff = fetched?.diff || a.diff || "";
 const prNumber = fetched?.pr_number || a.prNumber || 0;
 const repo = fetched?.repo || a.repo || "";
@@ -394,13 +395,13 @@ log(`intent=${intent.mode}, category=${category}, difficulty=${difficulty}/5`);
 
 // Answer mode: the walkthrough IS the answer. Post and stop.
 if (intent.mode === "answer") {
-  if (post) await agent(overviewPostPrompt(prNumber, triage.overview_markdown), { model: "haiku", label: "post-answer", phase: "Triage" });
+  if (post) await agent(overviewPostPrompt(prNumber, triage.overview_markdown), { model: "sonnet", label: "post-answer", phase: "Triage" });
   return { ok: true, mode: "answer", answer: triage.overview_markdown, posted: post };
 }
 
 // Post the pre-review walkthrough first (full/focused only).
 if (post && (intent.mode === "full" || intent.mode === "focused")) {
-  await agent(overviewPostPrompt(prNumber, triage.overview_markdown), { model: "haiku", label: "post-overview", phase: "Triage" });
+  await agent(overviewPostPrompt(prNumber, triage.overview_markdown), { model: "sonnet", label: "post-overview", phase: "Triage" });
 }
 
 const path = difficultyPath(difficulty);
@@ -413,8 +414,8 @@ const reconCounts = {};
 if (reviewing && path.recon) {
   phase("Recon");
   const results = (await parallel([
-    () => agent(reconPrompt("ai-slop", diff, category, focus), { schema: RECON_SCHEMA, model: "haiku", label: "recon:ai-slop", phase: "Recon" }),
-    () => agent(reconPrompt("review-suggestion", diff, category, focus), { schema: RECON_SCHEMA, model: "haiku", label: "recon:suggestion", phase: "Recon" }),
+    () => agent(reconPrompt("ai-slop", diff, category, focus), { schema: RECON_SCHEMA, model: "sonnet", label: "recon:ai-slop", phase: "Recon" }),
+    () => agent(reconPrompt("review-suggestion", diff, category, focus), { schema: RECON_SCHEMA, model: "sonnet", label: "recon:suggestion", phase: "Recon" }),
     () => agent(toolsPrompt(), { schema: TOOLS_SCHEMA, model: "haiku", label: "tools", phase: "Recon" }),
   ])).filter(Boolean);
   for (const r of results) {
@@ -482,7 +483,7 @@ phase("Validate");
 let violations = runValidators(kept);
 for (let r = 0; r < 2 && violations.length; r++) {
   const off = violations.map((v) => ({ index: v.index, fails: v.fails, text: kept[v.index].original.description }));
-  const fix = await agent(rewritePrompt(off), { schema: REWRITE_SCHEMA, model: "haiku", label: "rewrite", phase: "Validate" });
+  const fix = await agent(rewritePrompt(off), { schema: REWRITE_SCHEMA, model: "sonnet", label: "rewrite", phase: "Validate" });
   for (const d of fix?.descriptions || []) if (kept[d.index]) kept[d.index] = { ...kept[d.index], original: { ...kept[d.index].original, description: d.description } };
   violations = runValidators(kept);
 }
@@ -504,6 +505,6 @@ if (post && validationPassed) {
 
 // ---- Memory (palace; GHA pushes for GitHub, local-only for GitLab) ----------
 phase("Memory");
-const memory = await agent(memoryPrompt({ event, confirmed: totals.confirmed, resolved: totals.resolved, stillOpen, known_patterns: knownPatterns }), { model: "haiku", label: "memory", phase: "Memory" });
+const memory = await agent(memoryPrompt({ event, confirmed: totals.confirmed, resolved: totals.resolved, stillOpen, known_patterns: knownPatterns }), { model: "sonnet", label: "memory", phase: "Memory" });
 
 return { ok: true, platform, repo, prNumber, intent: intent.mode, difficulty, event, validationPassed, validatorViolations: violations, totals, threadActions, overview: triage.overview_markdown, payload, posted, memory };
