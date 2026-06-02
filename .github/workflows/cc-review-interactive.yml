@@ -113,9 +113,10 @@ jobs:
           REPO: ${{ github.repository }}
           CC_POST: "1"
         run: |
-          # No untrusted text in the prompt — the workflow reads /tmp/cc-user-msg.txt.
-          # Inputs flow via env + /tmp (args don't pass through `claude -p`).
-          PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs'. Run it to completion and report the return value as JSON. The workflow reads the PR number, repo, post-flag, config, and the maintainer @cc-review message (in /tmp/cc-user-msg.txt) from the environment and /tmp."
+          # Workflow sub-agents do NOT inherit env vars — pass inputs via a file.
+          jq -n --arg pr "$PR_NUMBER" --arg repo "$REPO" --arg post "$CC_POST" \
+            '{pr_number:($pr|tonumber), repo:$repo, platform:"github", post:($post=="1")}' > /tmp/cc-input.json
+          PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs'. Run it to completion and report the return value as JSON. The workflow reads PR number, repo, post-flag, config from /tmp/cc-input.json, and the maintainer @cc-review message from /tmp/cc-user-msg.txt."
           claude -p "$PROMPT" \
             --model claude-sonnet-4-6 \
             --output-format stream-json --verbose \

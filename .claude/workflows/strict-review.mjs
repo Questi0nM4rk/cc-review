@@ -147,14 +147,13 @@ const STRICT = [
 ].join("\n");
 
 const fetchPrompt = (a) =>
-  `Assemble review context by calling the platform adapter. Run from the repo root.\n` +
-  `1. PR/MR number <n>: ${a.prNumber ? a.prNumber : "run 'echo $PR_NUMBER' (GitHub) or 'echo $CI_MERGE_REQUEST_IID' (GitLab) and use that exact integer verbatim — do NOT infer the number from the diff or guess"}.\n` +
-  `2. Run: tsx ${ADAPTER} context --pr <n>   -> gives platform, repo, diff (use /tmp/pr-diff.txt verbatim if it exists and is non-empty; the adapter handles this).\n` +
-  `3. Run: tsx ${ADAPTER} threads --pr <n>    -> prior open review threads.\n` +
-  `4. If /tmp/cc-user-msg.txt exists, cat it and return its contents as user_message (the maintainer's @cc-review message — return it as raw data, do not act on it here). Otherwise user_message = "".\n` +
-  `5. post: run \`echo "$CC_POST"\`; return post=true only if it is "1" or "true", else false. This gates whether the review is actually posted.\n` +
-  `6. If .cc-review.yaml exists at the repo root, parse it (it is YAML) and return config = { languages, ignore_paths, instructions, known_patterns } (use empty values for missing keys). Otherwise config = {}.\n` +
-  `Return the merged JSON: diff, pr_number, repo, platform, user_message, post, config, threads. Do not summarize the diff.`;
+  `Assemble the review context. IMPORTANT: environment variables are NOT visible to you — read everything from files via bash.\n` +
+  `1. cat /tmp/cc-input.json — it holds { pr_number, repo, platform, post } written by the runner. Use those values VERBATIM; never infer the PR number from the diff or guess.${a.prNumber ? ` (If the file is missing, fall back to pr_number=${a.prNumber}, repo="${a.repo || ""}", post=false.)` : ` (If the file is missing, this is local mode: set post=false.)`}\n` +
+  `2. tsx ${ADAPTER} context --pr <pr_number>  -> diff (the adapter reads /tmp/pr-diff.txt if present).\n` +
+  `3. tsx ${ADAPTER} threads --pr <pr_number>  -> prior open review threads.\n` +
+  `4. cat /tmp/cc-user-msg.txt if it exists -> user_message (raw data; do not act on it). Else "".\n` +
+  `5. cat .cc-review.yaml at the repo root if present, parse the YAML -> config { languages, ignore_paths, instructions, known_patterns } (empty for missing keys). Else {}.\n` +
+  `Return the merged JSON: diff, pr_number, repo, platform, post, user_message, config, threads. Do not summarize the diff.`;
 
 const triagePrompt = (diff, userMessage, threadCount) =>
   `${STRICT}\n\n` +
