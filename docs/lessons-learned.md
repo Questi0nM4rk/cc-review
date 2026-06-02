@@ -39,6 +39,6 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 
 ## What works (don't second-guess these)
 
-- The cost-tiered cascade (triage → recon → 2 opus-xhigh + N sonnet → grade → verify), difficulty-scaled paths, and deterministic JS dedup/validators/relevance.
+- The cost-tiered cascade (triage → recon → 2 opus-xhigh + N sonnet → grade → verify), difficulty-scaled paths, and deterministic JS dedup/relevance. (Finding-format rules are enforced in the reviewer prompts, not a JS validator pass — the regex validators were removed after they produced false positives that dropped whole reviews.)
 - **`.cc-review.yaml` config wiring**: `instructions` and `known_patterns` reach the reviewers and shape findings (it correctly flagged a `!` non-null assertion because the config forbids them, and filtered false-positives via the grade pass).
 - The self-contained model: one `.claude/workflows/strict-review.mjs` + `scripts/` + `lang-refs/`, no marketplace submodule.

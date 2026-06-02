@@ -177,7 +177,7 @@ Per-PR, last-run-only `session.jsonl` + `meta.json`. Survives PR close (audit tr
 ## 9. Determinism & safety
 
 - Orchestration (fetch → triage → squad selection → dedup → grade → verify → decide → report) is pure JS; only agent calls are stochastic. Same model outputs ⇒ identical control flow.
-- Card validators (no severity labels, no emoji, imperative mood) run in JS over every finding field, with a bounded rewrite loop.
+- Finding format (no severity labels, no emoji, imperative mood) is enforced by the reviewer prompts (the STRICT block) — there is no separate JS validation or rewrite pass.
 - The approval gate is deterministic and cannot be overridden by a PR comment.
 - Posting is gated on explicit `args.post===true`; the review *engine* is side-effect-free until then.
 

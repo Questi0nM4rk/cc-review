@@ -40,10 +40,6 @@ const PATH = {
   5: { recon: true, sonnetCount: 4, grade: true, verify: true },
 };
 
-const SEVERITY_RE = /\b(minor|major|critical|nit|nitpick|suggestion)\b/i;
-const NON_IMPERATIVE_PREFIX_RE = /^(the |this |there |it |consider |maybe |we |you |please |should |could |might )/i;
-const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
-
 const LANG_BY_EXT = {
   cs: "dotnet", csproj: "dotnet", sln: "dotnet",
   ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
@@ -132,7 +128,6 @@ const GRADED_SCHEMA = {
 
 const VERIFY_SCHEMA = { type: "object", required: ["keep", "reason"], additionalProperties: false, properties: { keep: { type: "boolean" }, reason: { type: "string" } } };
 const THREAD_ACTION_SCHEMA = { type: "object", required: ["thread_id", "action", "reason"], additionalProperties: false, properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["resolve", "keep", "reply"] }, reason: { type: "string" }, reply_body: { type: "string" }, known_pattern: { type: "string" } } };
-const REWRITE_SCHEMA = { type: "object", required: ["descriptions"], additionalProperties: false, properties: { descriptions: { type: "array", items: { type: "object", required: ["index", "description"], additionalProperties: false, properties: { index: { type: "integer" }, description: { type: "string" } } } } } };
 
 // ============================================================================
 // PROMPTS
@@ -213,8 +208,6 @@ const verifyPrompt = (g, diff) =>
 
 const commentMgmtPrompt = (t, diff) =>
   `${STRICT}\n\nManage one prior review thread the bot opened, now that the PR has new commits.\nTHREAD ${t.id} at ${t.path}:${t.line}\nOriginal finding: ${t.original_body}\nAuthor replied: ${t.author_replied}${t.latest_reply ? `\nLatest reply: ${t.latest_reply}` : ""}\n\nRead the CURRENT ${t.path} around line ${t.line} (file on disk = PR head). Decide:\n- 'resolve' if genuinely fixed AND correct (not a fake/partial fix). If the author's reply convincingly explains it is intentional, resolve and set known_pattern (one line) for future reviews.\n- 'reply' if the author replied but it is NOT actually fixed / the fix is wrong — set reply_body to a concrete imperative of what is still wrong (thread stays open).\n- 'keep' if no fix and no reply worth answering.\nDo not resolve a superficial or incorrect fix — strictness over politeness.\n\nDIFF:\n${diff}`;
-
-const rewritePrompt = (off) => `${STRICT}\n\nEach description failed a validator (severity label / non-imperative / emoji). Rewrite each as an imperative directive, no label, no emoji, same meaning. One per index.\n\n` + off.map((o) => `[${o.index}] (${o.fails.join(",")}) ${JSON.stringify(o.text)}`).join("\n");
 
 const overviewPostPrompt = (prNumber, md) =>
   `Post the pre-review walkthrough comment. Write the markdown below VERBATIM to /tmp/cc-overview.md using bash (a cat heredoc — NOT the Write tool; /tmp is outside the agent's writable workspace), then run:\n  tsx ${ADAPTER} post-overview --pr ${prNumber} --body-file /tmp/cc-overview.md\nReport the comment id. Markdown:\n<<<MD\n${md}\nMD`;
@@ -324,18 +317,6 @@ function dedup(findings) {
   return [...m.values()];
 }
 
-function runValidators(entries) {
-  const v = [];
-  entries.forEach((e, index) => {
-    const texts = [e.original?.description, e.reframe_note, ...(e.call_stack || [])].filter(Boolean);
-    const fails = new Set();
-    for (const t of texts) { if (SEVERITY_RE.test(t)) fails.add("severity-label"); if (EMOJI_RE.test(t)) fails.add("emoji"); }
-    if (e.original?.description && NON_IMPERATIVE_PREFIX_RE.test(e.original.description.trim())) fails.add("non-imperative");
-    if (fails.size) v.push({ index, fails: [...fails], text: e.original?.description ?? "" });
-  });
-  return v;
-}
-
 function stampHash(obj) {
   const s = JSON.stringify(obj);
   let h = 0x811c9dc5;
@@ -355,7 +336,7 @@ function buildPayload(kept, event) {
   }
   const text = event === "APPROVE" ? "No outstanding findings. All prior threads resolved." : `## Strict review\n\n${body.length ? `### Issues outside the diff\n\n${body.join("\n")}\n\n` : ""}Inline comments mark required changes. Requesting changes until every thread is resolved.`;
   const p = { event, body: text, comments };
-  p._validated_by = stampHash(p);
+  p._integrity = stampHash(p); // FNV-1a fingerprint of the payload; not a validation guarantee
   return p;
 }
 
@@ -508,27 +489,16 @@ const replies = threadActions.filter((t) => t.reply_body && (t.action === "reply
 const knownPatterns = threadActions.map((t) => t.known_pattern).filter(Boolean);
 const stillOpen = priorThreads.length - resolveIds.length;
 
-// ---- Validate (walls + bounded rewrite) -------------------------------------
-phase("Validate");
-let violations = runValidators(kept);
-for (let r = 0; r < 2 && violations.length; r++) {
-  const off = violations.map((v) => ({ index: v.index, fails: v.fails, text: kept[v.index].original.description }));
-  const fix = await agent(rewritePrompt(off), { schema: REWRITE_SCHEMA, model: "sonnet", label: "rewrite", phase: "Validate" });
-  for (const d of fix?.descriptions || []) if (kept[d.index]) kept[d.index] = { ...kept[d.index], original: { ...kept[d.index].original, description: d.description } };
-  violations = runValidators(kept);
-}
-const validationPassed = violations.length === 0;
-
 // ---- Decide (APPROVE iff zero findings AND zero threads open) ---------------
 phase("Decide");
 const event = kept.length === 0 && stillOpen === 0 ? "APPROVE" : "REQUEST_CHANGES";
 const totals = { confirmed: kept.filter((e) => e.verdict === "confirmed").length, reframe: kept.filter((e) => e.verdict === "reframe-higher").length, falsePositive: falsePositives.length, refuted: refuted.length, resolved: resolveIds.length, replied: replies.length, threadsOpen: stillOpen, event, difficulty };
 log(`decision: ${event} (${kept.length} new, ${stillOpen} threads open)`);
-const payload = buildPayload(validationPassed ? kept : [], event);
+const payload = buildPayload(kept, event);
 
-// ---- Post (only on explicit opt-in + validation passed) ---------------------
+// ---- Post (only on explicit opt-in) -----------------------------------------
 let posted = null;
-if (post && validationPassed) {
+if (post) {
   phase("Post");
   posted = await agent(reviewPostPrompt({ repo, pr_number: prNumber, resolve_ids: resolveIds, replies, payload }), { model: "sonnet", label: "post-review", phase: "Post" });
 }
@@ -537,4 +507,4 @@ if (post && validationPassed) {
 phase("Memory");
 const memory = await agent(memoryPrompt({ event, confirmed: totals.confirmed, resolved: totals.resolved, stillOpen, known_patterns: knownPatterns }), { model: "sonnet", label: "memory", phase: "Memory" });
 
-return { ok: true, platform, repo, prNumber, localDryRun, intent: intent.mode, difficulty, event, validationPassed, validatorViolations: violations, totals, threadActions, overview: triage.overview_markdown, payload, posted, memory };
+return { ok: true, platform, repo, prNumber, localDryRun, intent: intent.mode, difficulty, event, totals, threadActions, overview: triage.overview_markdown, payload, posted, memory };
