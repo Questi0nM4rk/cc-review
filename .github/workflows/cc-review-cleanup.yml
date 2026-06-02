@@ -1,0 +1,41 @@
+# ============================================================================
+#  cc-review cleanup — deletes the ephemeral debug log branch on PR close.
+#  Pairs with cc-review.yml, which creates <source-branch>-cc-review-output
+#  while the PR is open. Once the PR is closed or merged, that branch is junk —
+#  this removes it so consumer repos do not accumulate -cc-review-output refs.
+# ============================================================================
+name: cc-review cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  delete-log-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Delete the log branch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          LOG_BRANCH="${HEAD_REF}-cc-review-output"
+          if gh api "repos/${REPO}/git/refs/heads/${LOG_BRANCH}" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${REPO}/git/refs/heads/${LOG_BRANCH}" \
+              && echo "Deleted ${LOG_BRANCH}" \
+              || echo "Failed to delete ${LOG_BRANCH} (non-fatal)"
+          else
+            echo "No log branch ${LOG_BRANCH} to delete."
+          fi

@@ -1,282 +1,116 @@
 <p align="center">
   <h1 align="center">cc-review</h1>
   <p align="center">
-    Automated PR code review powered by Claude Code + GitHub Actions
+    Automated, zero-tolerance PR/MR review powered by Claude Code.
     <br />
-    <em>Runs the <a href="https://github.com/Questi0nM4rk/qsm-marketplace">qsm-strict-review</a> 4-phase pipeline on every PR. Inline comments, atomic review, project memory.</em>
+    <em>One self-contained workflow. Cost-tiered agents, dynamic depth, strict by construction.</em>
   </p>
 </p>
 
 <p align="center">
-  <strong>No API billing</strong> &mdash; Claude Max OAuth token
+  <strong>No API billing</strong> — Claude Max OAuth token
   &nbsp;&bull;&nbsp;
-  <strong>Bot identity</strong> &mdash; reviews from a GitHub App, not your account
+  <strong>Bot identity</strong> — reviews from a GitHub App
   &nbsp;&bull;&nbsp;
-  <strong>Plugin-based</strong> &mdash; review logic lives in qsm-marketplace
+  <strong>Self-contained</strong> — one workflow file, no marketplace/submodule
 </p>
 
----
-
-## How it works
-
-```
-PR opened / cc-review label / @cc-review mention
-         │
-         ▼
-  ┌─────────────────────────────┐
-  │  GitHub Actions              │
-  │                              │
-  │  Generate App token          │
-  │  Clone cc-review with        │
-  │    qsm-marketplace submodule │
-  │  Pre-fetch PR diff + meta    │
-  └──────────┬──────────────────┘
-             │
-             ▼
-  ┌─────────────────────────────┐
-  │  claude -p (headless)        │
-  │  --plugin-dir strict-review  │
-  │  --plugin-dir qsm-git-tools  │
-  │                              │
-  │  Run /strict-review:         │
-  │   Phase 0  research          │
-  │   Phase 1  scan + simplify   │
-  │   Phase 2  false-pos verify  │
-  │   Phase 3  synthesize + post │
-  └──────────┬──────────────────┘
-             │
-             ▼
-  ┌─────────────────────────────┐
-  │  Single atomic PR review     │
-  │  REQUEST_CHANGES or APPROVE  │
-  │  Memory branch updated       │
-  └─────────────────────────────┘
-```
-
-The bot never calls `gh pr review` — `qsm-strict-review`'s synthesizer posts the review as one `POST /pulls/N/reviews` payload. See [docs/github-review-api.md](docs/github-review-api.md) for the contract.
-
-## Architecture
-
-```
-Bot repo (this)                       Target repo (yours)
-
-├── .github/workflows/                ├── .cc-review.yaml             ← customize this
-│   ├── cc-review.yml                 └── .github/workflows/
-│   ├── cc-review-interactive.yml         ├── cc-review.yml           ← copied at install
-│   └── test.yml                          └── cc-review-interactive.yml
-│
-├── vendor/qsm-marketplace/           Only 3 files in the consumer repo.
-│   └── plugins/                      Workflows clone this bot repo at
-│       ├── strict-review/            CI runtime — submodule and all.
-│       └── qsm-git-tools/
-│
-├── docs/
-│   └── github-review-api.md
-│
-├── scripts/
-│   ├── setup.ts / setup.sh           ← interactive setup (creates GitHub App)
-│   └── install-to-repo.sh            ← quick file copy if secrets already configured
-│
-└── .cc-review.yaml                   ← config template
-```
-
-`vendor/qsm-marketplace` is a git submodule pinned to a specific SHA. Bumping it = bumping the review pipeline.
+> The canonical, exhaustive description lives in **[SPEC.md](SPEC.md)**. This README is the practical guide.
 
 ---
+
+## What it does
+
+On a PR it posts a **pre-review walkthrough** (business + technical summary, a mermaid diagram, and a `Difficulty: N/5` rating), then runs a strict review and posts **one atomic review**. It re-checks its own prior comments on every run — verifying fixes against the actual code — and **approves only when there are zero findings and zero unresolved threads**.
+
+```
+PR event / @cc-review ping
+        │
+  GitHub Actions: clone bot, generate App token, run the workflow headless
+        │
+  strict-review.mjs  (the whole brain)
+   Triage (opus) ─ posts walkthrough + difficulty ─┐ rating scales the rest
+   Recon (haiku) → Review (2 opus·xhigh + 0/2/4 sonnet) → Grade → Verify
+   Comment-Mgmt (re-check prior threads) → Decide → Post → Memory
+        │
+  One review (APPROVE / REQUEST_CHANGES) · threads resolved · memory + log branches updated
+```
+
+## How review depth scales (token-efficient + pedantic)
+
+The triage difficulty rating (1–5) deterministically picks the path:
+
+| Difficulty | Squad | Extra passes |
+|---|---|---|
+| 1 (trivial) | 2 opus | — |
+| 2–3 (normal) | 2 opus + 2 sonnet | recon, grade |
+| 4–5 (hard) | 2 opus + 4 sonnet | recon, grade, per-finding verify |
+
+The 2 opus reviewers are the top-2 domains by a deterministic relevance score for the diff.
+
+## Configuration — `.cc-review.yaml`
+
+```yaml
+trigger: pr_open    # every_push | pr_open | disabled
+languages: [csharp, typescript]
+ignore_paths: ["docs/**", "**/*.md"]
+instructions: "Wolverine handles durable messaging — don't flag the queue indirection."
+known_patterns: ["Broad exception handlers in middleware are intentional."]
+```
+
+| `trigger` | Auto-reviews on |
+|---|---|
+| `every_push` | PR open **and** every push to the branch |
+| `pr_open` | PR open / reopen only (default) |
+| `disabled` | never — only the `@cc-review` ping |
+
+## Using it
+
+**Automatic** — per `trigger`.
+
+**`@cc-review` ping — ALWAYS available**, even when `trigger: disabled`:
+```
+@cc-review                                    full review
+@cc-review re-check the auth path             focused review
+@cc-review just verify my fixes and approve   recheck + conditional approve
+@cc-review what does this change do?          answer-only, no review
+```
+The message steers the run within fixed, safe bounds — it can never force an approval (the approval gate verifies fixes against the code).
+
+**Manual** — add the `cc-review` label, or `workflow_dispatch` with a PR number. The `no-review` label suppresses auto-runs.
 
 ## Setup
 
-### Prerequisites
+1. **Create the GitHub App** (`./scripts/setup.sh`) with permissions: Contents R/W, Pull requests R/W, Issues R/W, Metadata R; events: PR, Issue comment, PR review comment.
+2. **Install the App on two repos**: your target repo, and `Questi0nM4rk/cc-review` (so CI can clone the brain). *(No marketplace install — the bot is self-contained.)*
+3. **Add secrets** to the target repo: `CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_ID`, `REVIEWER_APP_PRIVATE_KEY`.
+4. **Copy the workflow files + config** into the target repo:
+   ```bash
+   ./scripts/install-to-repo.sh /path/to/your-repo
+   ```
+   That places `.github/workflows/cc-review.yml`, `cc-review-interactive.yml`, `cc-review-cleanup.yml`, and `.cc-review.yaml`.
 
-- [GitHub CLI](https://cli.github.com/) installed and authenticated
-- [Claude Code](https://claude.ai/code) signed in to a Max account
-- Admin access to the target repository
+## Debugging — branches the bot writes
 
-### One-liner
+| Branch | Where | Contents |
+|---|---|---|
+| `claude-reviewer/memory` | bot repo | per-project palace: `MEMORY.md` + `learnings/{lessons,found-issues,known-patterns,decisions}.md` |
+| `<source-branch>-cc-review-output` | your repo | **ephemeral** per-PR run log (diff, session, result); auto-deleted when the PR closes |
+| `claude-reviewer/transcripts` | your repo | per-PR last-run `session.jsonl` |
 
-```bash
-git clone --recurse-submodules https://github.com/Questi0nM4rk/cc-review.git
-cd cc-review && ./scripts/setup.sh
-```
+## GitLab / local mode
 
-The interactive setup creates a GitHub App, requests its install on the target repo, stores secrets, and pushes the workflow files. See `scripts/setup.ts` for the flow.
-
-### One-time prerequisites for the bot's App
-
-The GitHub App generated by setup must be installed on **three** repos:
-
-| Repo | Why |
-|---|---|
-| Your target repo (e.g. `you/your-app`) | So the bot can read the PR, post reviews, and push to the memory branch. |
-| `Questi0nM4rk/cc-review` | So CI can clone this bot's intelligence at runtime. |
-| `Questi0nM4rk/qsm-marketplace` | So CI can pull the marketplace submodule (private repo). |
-
-Setup installs on the target repo automatically. You install on `cc-review` and `qsm-marketplace` once via the App's installation page.
-
-### Required secrets
-
-Stored on the target repo:
-
-| Secret | Value |
-|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | `sk-ant-oat01-...` from `claude setup-token` (1-year lifetime) |
-| `REVIEWER_APP_ID` | Numeric App ID |
-| `REVIEWER_APP_PRIVATE_KEY` | Full `.pem` file contents |
-
-### Upgrading existing consumers
-
-The workflow YAMLs in consumer repos are static copies — they don't auto-update when this bot's main branch changes. After meaningful workflow changes here, re-run:
-
-```bash
-./scripts/install-to-repo.sh /path/to/consumer-repo
-cd /path/to/consumer-repo
-git checkout -b chore/upgrade-cc-review-workflows
-git add .github/workflows/cc-review*.yml .cc-review.yaml
-git commit -m "chore: upgrade cc-review workflows"
-git push -u origin HEAD && gh pr create --fill
-```
-
-Secrets, GitHub App installs, and memory branches all carry over — only the workflow files need refreshing.
-
----
-
-## Configuration
-
-`.cc-review.yaml` in your repo root:
-
-```yaml
-version: 1
-auto_review: true       # review on PR open; false → manual trigger only
-
-languages:
-  - python
-  - typescript
-
-ignore_paths:
-  - "docs/**"
-  - "**/*.md"
-
-instructions: |
-  FastAPI project using SQLAlchemy.
-  All subprocess calls must use `uv run`.
-
-known_patterns:
-  - "We use broad exception handlers in middleware intentionally"
-```
-
-The strict-review research phase reads this file and uses it to focus the scanners.
-
----
-
-## Triggers
-
-| Trigger | Effect |
-|---|---|
-| `pull_request: opened` | Auto-review when `auto_review: true` |
-| Label `cc-review` added to PR | Re-run review |
-| Label `no-review` on PR | Skip auto-review |
-| `@cc-review` comment on PR | Interactive — runs strict-review or answers a question |
-| Workflow dispatch with `pr_number` | Manual review on a specific PR |
-
-### Interactive
-
-```
-@cc-review                          # run strict-review on this PR
-@cc-review what does this change?   # explain the diff, no review posted
-@cc-review re-check the auth path   # review with extra focus
-```
-
-The user message between `@cc-review` and end-of-comment is treated as untrusted input — the bot is instructed not to follow embedded directives that override the review pipeline.
-
----
-
-## Memory and transcripts
-
-Two separate orphan branches with very different purposes:
-
-### Project memory — `cc-review:claude-reviewer/memory`
-
-Global, append-forever, segregated by `<owner>/<repo>/`. Consumer repos never see this branch:
-
-```
-cc-review @ claude-reviewer/memory
-├── README.md
-├── Questi0nM4rk/ai-guardrails/
-│   ├── MEMORY.md         long-form learned context — what to focus on, what's intentional, recurring patterns
-│   ├── REVIEW_LOG.md     last review's human-readable output (overwritten each run)
-│   ├── reviews/          past PR review bodies (read-only context for future reviews)
-│   ├── advice/           past research-phase advice (read-only context)
-│   └── notes/            bot self-improvement notes
-└── Questi0nM4rk/<other-repo>/
-    └── …
-```
-
-Before every review, the workflow extracts only this consumer's slice into `/tmp/memory/` and exposes it to the model. The model can update `MEMORY.md` and write `notes/` during the review; after, the workflow pushes the slice back. Cross-repo write races are mitigated with a per-repo concurrency group plus a 3-attempt retry.
-
-### Run transcripts — `<consumer>:claude-reviewer/transcripts`
-
-Per-PR, last-run-only, lives on the **consumer** repo (so you can audit what the bot did on your PR without leaving the repo):
-
-```
-ai-guardrails @ claude-reviewer/transcripts
-├── README.md
-├── PR-141/
-│   ├── session.jsonl     full Claude session (overwritten on each run for PR-141)
-│   └── meta.json         status, run URL, date
-├── PR-143/
-│   └── …
-```
-
-Different PRs get sibling folders; multiple runs on the same PR overwrite each other. Use these to debug "why did the bot post that?" without re-running.
-
-### What you'd typically check
-
-| Question | Where to look |
-|---|---|
-| What does the bot think it knows about my project? | `cc-review:claude-reviewer/memory` → `<your>/<repo>/MEMORY.md` |
-| Why did it flag X on PR #141? | `<your-repo>:claude-reviewer/transcripts` → `PR-141/session.jsonl` |
-| What did past reviews say? | `cc-review:claude-reviewer/memory` → `<your>/<repo>/reviews/` |
-
----
+Where a CI bot app isn't allowed (e.g. corporate GitLab), run it **locally** against an MR. The platform adapter auto-detects GitLab and uses `glab`; the review and walkthrough post to the MR, but **no branches are pushed** — memory and run output stay in local files. Workflows run natively in your interactive session (and you can watch live via Remote Control).
 
 ## Troubleshooting
 
-<details>
-<summary>Bot not reviewing</summary>
-
-- Actions tab — is the workflow running at all? Check `cc-review.yml` is present in `.github/workflows/`.
-- Verify all 3 secrets are set on the target repo.
-- Verify the GitHub App is installed on the target repo, `cc-review`, AND `qsm-marketplace`.
-</details>
-
-<details>
-<summary>Submodule clone fails with 404</summary>
-
-The App isn't installed on `Questi0nM4rk/qsm-marketplace`. Visit the App's installation settings and add it.
-</details>
-
-<details>
-<summary>Bot can't approve / unresolved threads</summary>
-
-The `qsm-strict-review` synthesizer refuses to approve while review threads are unresolved. Resolve them in the PR UI, then re-trigger by re-applying the `cc-review` label.
-</details>
-
-<details>
-<summary>OAuth token expired</summary>
-
-`CLAUDE_CODE_OAUTH_TOKEN` lasts 1 year. Regenerate with `claude setup-token` and update the repo secret.
-</details>
-
-<details>
-<summary>Review missed something / too noisy</summary>
-
-- Add the false-positive pattern to `known_patterns` in `.cc-review.yaml`
-- Add project conventions to `instructions`
-- Both feed into strict-review's research phase
-</details>
+| Symptom | Check |
+|---|---|
+| Not reviewing | `trigger:` value; the 3 secrets; App installed on target **and** `cc-review` |
+| Can't approve | Unresolved threads remain — the gate refuses to approve until every thread is resolved |
+| Too noisy / missed something | Add to `known_patterns` / `instructions` in `.cc-review.yaml` |
+| Why did it flag X? | The `<branch>-cc-review-output` log branch (while the PR is open) or the transcripts branch |
 
 ---
 
-<p align="center">
-  <sub>Built on <a href="https://claude.ai/code">Claude Code</a> + <a href="https://github.com/Questi0nM4rk/qsm-marketplace">qsm-marketplace</a></sub>
-</p>
+<p align="center"><sub>Built on <a href="https://claude.ai/code">Claude Code</a> — see <a href="SPEC.md">SPEC.md</a> for the full contract.</sub></p>

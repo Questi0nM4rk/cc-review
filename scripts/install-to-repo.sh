@@ -29,6 +29,7 @@ echo "Installing cc-review bot to: $TARGET"
 FILES=(
     ".github/workflows/cc-review.yml"
     ".github/workflows/cc-review-interactive.yml"
+    ".github/workflows/cc-review-cleanup.yml"
     ".cc-review.yaml"
 )
 
