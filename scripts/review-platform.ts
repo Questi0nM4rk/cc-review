@@ -346,8 +346,10 @@ function main() {
     case "resolve":
       return out(d.platform === "github" ? gh.resolve(requireFlag("thread")) : gl.resolve(d.repo, requireFlag("pr"), requireFlag("thread")));
     case "reply":
+      // GitHub replies via in_reply_to need the REST comment db id (--comment-id);
+      // GitLab replies target the discussion id (--thread). Caller passes both.
       return out(d.platform === "github"
-        ? gh.reply(d.repo, requireFlag("pr"), requireFlag("thread"), bodyFromFile())  // --thread = comment_db_id on GH
+        ? gh.reply(d.repo, requireFlag("pr"), requireFlag("comment-id"), bodyFromFile())
         : gl.reply(d.repo, requireFlag("pr"), requireFlag("thread"), bodyFromFile()));
     default:
       return die(`unknown verb: ${verb}`);

@@ -222,7 +222,7 @@ const overviewPostPrompt = (prNumber, md) =>
 const reviewPostPrompt = (ctx) =>
   `Apply the review to ${ctx.repo} PR/MR #${ctx.pr_number} via the adapter, from the repo root. In order:\n` +
   `1. resolve threads: ${JSON.stringify(ctx.resolve_ids)} — for each: tsx ${ADAPTER} resolve --pr ${ctx.pr_number} --thread <id>\n` +
-  `2. reply threads: ${JSON.stringify(ctx.replies)} — for each: write reply_body to /tmp/cc-reply.md and run tsx ${ADAPTER} reply --pr ${ctx.pr_number} --thread <thread_id> --body-file /tmp/cc-reply.md\n` +
+  `2. reply threads: ${JSON.stringify(ctx.replies)} — for each: write reply_body to /tmp/cc-reply.md and run tsx ${ADAPTER} reply --pr ${ctx.pr_number} --thread <thread_id> --comment-id <comment_db_id> --body-file /tmp/cc-reply.md (pass both ids; the adapter uses the one its platform needs)\n` +
   `3. post the review: write this payload to /tmp/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload /tmp/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nConfirm what you posted in one line.`;
 
 const memoryPrompt = (ctx) =>
@@ -469,7 +469,11 @@ const threadActions = priorThreads.length
   ? (await parallel(priorThreads.map((t) => () => agent(commentMgmtPrompt(t, diff), { schema: THREAD_ACTION_SCHEMA, model: "sonnet", label: `thread:${t.path}:${t.line}`, phase: "Comment Mgmt" })))).filter(Boolean)
   : [];
 const resolveIds = threadActions.filter((t) => t.action === "resolve").map((t) => t.thread_id);
-const replies = threadActions.filter((t) => t.reply_body && (t.action === "reply" || t.action === "resolve")).map((t) => ({ thread_id: t.thread_id, reply_body: t.reply_body }));
+const replies = threadActions.filter((t) => t.reply_body && (t.action === "reply" || t.action === "resolve")).map((t) => {
+  // GitHub replies need the REST comment id (in_reply_to), not the thread node id; carry both.
+  const orig = priorThreads.find((p) => p.id === t.thread_id);
+  return { thread_id: t.thread_id, comment_db_id: orig?.comment_db_id ?? null, reply_body: t.reply_body };
+});
 const knownPatterns = threadActions.map((t) => t.known_pattern).filter(Boolean);
 const stillOpen = priorThreads.length - resolveIds.length;
 
