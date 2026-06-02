@@ -68,7 +68,7 @@ jobs:
           PR="${DISPATCH_PR:-$EVENT_PR}"
           echo "pr_number=$PR" >> "$GITHUB_OUTPUT"
 
-          TRIGGER=$(grep -oP '(?<=^trigger:\s).*' .cc-review.yaml 2>/dev/null | tr -d ' "'"'" || echo "pr_open")
+          TRIGGER=$(grep -oP '^trigger:\s*\K\S+' .cc-review.yaml 2>/dev/null | tr -d ' "'"'" || echo "pr_open")
           [ -z "$TRIGGER" ] && TRIGGER="pr_open"
           echo "Configured trigger: $TRIGGER (event=$EVENT action=$ACTION)"
 

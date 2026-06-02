@@ -30,7 +30,8 @@ const LANG_REFS = `${BOT}/lang-refs`;
 
 const DOMAIN_KEYS = ["security", "architecture", "testing", "performance", "data-access", "api"];
 
-// difficulty (1-5) -> path. squad = 2 opus (top-2 relevant) + sonnetCount sonnet specialists.
+// difficulty (1-5) -> path. Three effective tiers: 1 = lean, 2-3 = standard, 4-5 = deep.
+// squad = 2 opus (top-2 relevant) + sonnetCount sonnet specialists.
 const PATH = {
   1: { recon: false, sonnetCount: 0, grade: false, verify: false },
   2: { recon: true, sonnetCount: 2, grade: true, verify: false },
@@ -263,9 +264,10 @@ function applyIgnorePaths(files, globs) {
   return files.filter((f) => !res.some((r) => r.test(f)));
 }
 function mergeLangs(fromFiles, configLangs) {
-  const alias = { csharp: "dotnet", "c#": "dotnet", dotnet: "dotnet", typescript: "typescript", ts: "typescript", tsgo: "typescript", python: "python", py: "python", shell: "shell", bash: "shell", sh: "shell" };
+  const canon = new Set(["dotnet", "typescript", "python", "shell"]);
+  const alias = { csharp: "dotnet", "c#": "dotnet", ts: "typescript", tsgo: "typescript", py: "python", bash: "shell", sh: "shell" };
   const s = new Set(fromFiles);
-  for (const l of configLangs || []) { const k = alias[String(l).toLowerCase()]; if (k) s.add(k); }
+  for (const l of configLangs || []) { const k = String(l).toLowerCase(); const c = canon.has(k) ? k : alias[k]; if (c) s.add(c); }
   return [...s];
 }
 function buildProjectContext(config) {
@@ -344,9 +346,10 @@ function buildPayload(kept, event) {
   const comments = [], body = [];
   for (const e of kept) {
     const f = e.original;
+    const isReframe = e.verdict === "reframe-higher";
     let d = f.description;
-    if (e.verdict === "reframe-higher" && e.reframe_note) d = `${d} (reframe: ${e.reframe_note})`;
-    if (f.in_diff && e.verdict !== "reframe-higher") comments.push({ path: f.file, line: f.line, side: "RIGHT", body: d });
+    if (isReframe && e.reframe_note) d = `${d} (reframe: ${e.reframe_note})`;
+    if (f.in_diff && !isReframe) comments.push({ path: f.file, line: f.line, side: "RIGHT", body: d });
     else body.push(`- **\`${f.file}:${f.line}\`** — ${d}`);
   }
   const text = event === "APPROVE" ? "No outstanding findings. All prior threads resolved." : `## Strict review\n\n${body.length ? `### Issues outside the diff\n\n${body.join("\n")}\n\n` : ""}Inline comments mark required changes. Requesting changes until every thread is resolved.`;
@@ -484,7 +487,7 @@ const validationPassed = violations.length === 0;
 // ---- Decide (APPROVE iff zero findings AND zero threads open) ---------------
 phase("Decide");
 const event = kept.length === 0 && stillOpen === 0 ? "APPROVE" : "REQUEST_CHANGES";
-const totals = { confirmed: kept.filter((e) => e.verdict === "confirmed").length, reframe: kept.filter((e) => e.verdict === "reframe-higher").length, falsePositive: falsePositives.length, refuted: refuted.length, resolved: resolveIds.length, replied: replies.length, kept: stillOpen, event, difficulty };
+const totals = { confirmed: kept.filter((e) => e.verdict === "confirmed").length, reframe: kept.filter((e) => e.verdict === "reframe-higher").length, falsePositive: falsePositives.length, refuted: refuted.length, resolved: resolveIds.length, replied: replies.length, threadsOpen: stillOpen, event, difficulty };
 log(`decision: ${event} (${kept.length} new, ${stillOpen} threads open)`);
 const payload = buildPayload(validationPassed ? kept : [], event);
 

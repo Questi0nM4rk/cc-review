@@ -105,7 +105,7 @@ function detect(): Detected {
   if (remote.code !== 0) die("cannot read origin remote; not in a git repo?", remote.stderr);
   const { host, repo } = parseRemote(remote.stdout);
   if (!host || !repo) die(`cannot parse remote: ${remote.stdout}`);
-  const platform: Platform = /gitlab/i.test(host) ? "gitlab" : /github/i.test(host) ? "github" : "github";
+  const platform: Platform = /gitlab/i.test(host) ? "gitlab" : "github";
   return { platform, host, repo };
 }
 
@@ -115,11 +115,9 @@ function detect(): Detected {
 
 interface NormThread {
   id: string;            // GH: reviewThread node id   GL: discussion id
-  is_resolved: boolean;
   path: string;
   line: number;
   original_body: string; // first comment (the bot's finding)
-  original_author: string;
   author_replied: boolean;
   latest_reply: string;
   comment_db_id?: number; // GH only — REST id of the first review comment, for in_reply_to
@@ -161,9 +159,9 @@ const gh = {
         const replies = cs.slice(1);
         const lastReply = replies.length ? replies[replies.length - 1] : null;
         return {
-          id: t.id, is_resolved: false,
+          id: t.id,
           path: first.path ?? "", line: first.line ?? 0,
-          original_body: first.body ?? "", original_author: first.author?.login ?? "",
+          original_body: first.body ?? "",
           author_replied: replies.length > 0,
           latest_reply: lastReply?.body ?? "",
           comment_db_id: first.databaseId,
@@ -246,10 +244,10 @@ const gl = {
         const replies = notes.slice(1);
         const lastReply = replies.length ? replies[replies.length - 1] : null;
         return {
-          id: String(d.id), is_resolved: false,
+          id: String(d.id),
           path: first.position?.new_path ?? first.position?.old_path ?? "",
           line: first.position?.new_line ?? first.position?.old_line ?? 0,
-          original_body: first.body ?? "", original_author: first.author?.username ?? "",
+          original_body: first.body ?? "",
           author_replied: replies.length > 0,
           latest_reply: lastReply?.body ?? "",
         };
@@ -332,25 +330,27 @@ function main() {
 
   const d = detect();
 
+  // Each handler calls out()/die() (both `: never`, both process.exit). Explicit
+  // `return` makes the no-fallthrough contract obvious — this is a dispatch table.
   switch (verb) {
     case "detect":
-      out(d);
+      return out(d);
     case "context":
-      out(d.platform === "github" ? gh.context(d.repo, requireFlag("pr")) : gl.context(d.repo, requireFlag("pr")));
+      return out(d.platform === "github" ? gh.context(d.repo, requireFlag("pr")) : gl.context(d.repo, requireFlag("pr")));
     case "threads":
-      out({ threads: d.platform === "github" ? gh.threads(d.repo, requireFlag("pr")) : gl.threads(d.repo, requireFlag("pr")) });
+      return out({ threads: d.platform === "github" ? gh.threads(d.repo, requireFlag("pr")) : gl.threads(d.repo, requireFlag("pr")) });
     case "post-overview":
-      out(d.platform === "github" ? gh.postOverview(d.repo, requireFlag("pr"), bodyFromFile()) : gl.postOverview(d.repo, requireFlag("pr"), bodyFromFile()));
+      return out(d.platform === "github" ? gh.postOverview(d.repo, requireFlag("pr"), bodyFromFile()) : gl.postOverview(d.repo, requireFlag("pr"), bodyFromFile()));
     case "post-review":
-      out(d.platform === "github" ? gh.postReview(d.repo, requireFlag("pr"), requireFlag("payload")) : gl.postReview(d.repo, requireFlag("pr"), requireFlag("payload")));
+      return out(d.platform === "github" ? gh.postReview(d.repo, requireFlag("pr"), requireFlag("payload")) : gl.postReview(d.repo, requireFlag("pr"), requireFlag("payload")));
     case "resolve":
-      out(d.platform === "github" ? gh.resolve(requireFlag("thread")) : gl.resolve(d.repo, requireFlag("pr"), requireFlag("thread")));
+      return out(d.platform === "github" ? gh.resolve(requireFlag("thread")) : gl.resolve(d.repo, requireFlag("pr"), requireFlag("thread")));
     case "reply":
-      out(d.platform === "github"
+      return out(d.platform === "github"
         ? gh.reply(d.repo, requireFlag("pr"), requireFlag("thread"), bodyFromFile())  // --thread = comment_db_id on GH
         : gl.reply(d.repo, requireFlag("pr"), requireFlag("thread"), bodyFromFile()));
     default:
-      die(`unknown verb: ${verb}`);
+      return die(`unknown verb: ${verb}`);
   }
 }
 
