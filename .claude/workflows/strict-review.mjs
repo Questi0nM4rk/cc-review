@@ -231,16 +231,16 @@ const reviewPostPrompt = (ctx) =>
   `3. post the review: write this payload to /tmp/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload /tmp/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nConfirm what you posted in one line.`;
 
 const memoryPrompt = (ctx) =>
-  `Record durable project-review memory by APPENDING to files under /tmp/memory. First run 'cat /tmp/memory/MEMORY.md': if it errors the dir is absent (local dry-run) — then do nothing and say 'no memory dir (local mode)'. If it succeeds, you ARE in bot mode and MUST write — do not claim writes are blocked.\n` +
-  `The dirs /tmp/memory and /tmp/memory/learnings already exist. Write with the cat-heredoc append form ONLY (the exact mechanism the review-post step uses successfully) — cat IS available; you do not need and must not use mkdir/printf/tee/Write/Edit. Example:\n` +
-  `  cat >> /tmp/memory/learnings/found-issues.md <<'EOF'\n- <one concise factual bullet>\nEOF\n` +
-  `Append concise, factual, imperative bullets to the relevant files (cat >> creates a file if absent):\n` +
-  `  MEMORY.md                      one line on what this repo is / a recurring theme\n` +
-  `  learnings/found-issues.md      the notable issues confirmed this run (one bullet each)\n` +
-  `  learnings/lessons.md           durable lessons for future reviews\n` +
-  `  learnings/known-patterns.md    intentional patterns NOT to re-flag: ${JSON.stringify(ctx.known_patterns)}\n` +
-  `  learnings/decisions.md         notable review decisions + rationale\n` +
-  `This run: event=${ctx.event}, ${ctx.confirmed} confirmed, ${ctx.resolved} resolved, ${ctx.stillOpen} open. After writing, confirm in one line which files you appended to. If a cat append genuinely errors, report the EXACT error verbatim — never silently fall back to 'local mode'.`;
+  `Record durable project-review memory by APPENDING to files under ./.cc-memory — a directory in your CURRENT working directory, which you ARE allowed to write to (the GHA stages memory there precisely because the sandbox blocks /tmp). First run 'cat .cc-memory/MEMORY.md': if it errors, .cc-memory is absent (local dry-run) — do nothing and say 'no memory dir (local mode)'. If it succeeds you are in bot mode and MUST write.\n` +
+  `The dirs .cc-memory and .cc-memory/learnings already exist. Append with the cat-heredoc form (cat >> creates the file if absent); cat is available — do not use mkdir/printf/tee/Write/Edit. Example:\n` +
+  `  cat >> .cc-memory/learnings/found-issues.md <<'EOF'\n- <one concise factual bullet>\nEOF\n` +
+  `Append concise, factual, imperative bullets to the relevant files:\n` +
+  `  .cc-memory/MEMORY.md                   one line on what this repo is / a recurring theme\n` +
+  `  .cc-memory/learnings/found-issues.md   notable issues confirmed this run (one bullet each)\n` +
+  `  .cc-memory/learnings/lessons.md        durable lessons for future reviews\n` +
+  `  .cc-memory/learnings/known-patterns.md intentional patterns NOT to re-flag: ${JSON.stringify(ctx.known_patterns)}\n` +
+  `  .cc-memory/learnings/decisions.md      notable review decisions + rationale\n` +
+  `This run: event=${ctx.event}, ${ctx.confirmed} confirmed, ${ctx.resolved} resolved, ${ctx.stillOpen} open. After writing, confirm in one line which files you appended to. If a cat append errors, report the EXACT error verbatim.`;
 
 // ============================================================================
 // PURE-JS HELPERS (deterministic)
