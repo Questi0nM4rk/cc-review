@@ -3,3 +3,7 @@
 .env
 .env.*
 node_modules/
+
+# local cc-review memory test artifacts
+.cc-memory/
+.cc-memory.*/

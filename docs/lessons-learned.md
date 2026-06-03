@@ -42,3 +42,26 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 - The cost-tiered cascade (triage → recon → 2 opus-xhigh + N sonnet → grade → verify), difficulty-scaled paths, and deterministic JS dedup/relevance. (Finding-format rules are enforced in the reviewer prompts, not a JS validator pass — the regex validators were removed after they produced false positives that dropped whole reviews.)
 - **`.cc-review.yaml` config wiring**: `instructions` and `known_patterns` reach the reviewers and shape findings (it correctly flagged a `!` non-null assertion because the config forbids them, and filtered false-positives via the grade pass).
 - The self-contained model: one `.claude/workflows/strict-review.mjs` + `scripts/` + `lang-refs/`, no marketplace submodule.
+
+## CI sandbox + clone constraints (2026-06-03 — verified live on feats)
+
+- **GHA `claude -p` sub-agents are filesystem-sandboxed to `$GITHUB_WORKSPACE`.** Every `/tmp` write is blocked (the agent reports `Output redirection to '/tmp/...' was blocked ... may only write to files in the allowed working directories: '/home/runner/work/<repo>/<repo>'`). `bypassPermissions` does NOT lift the filesystem sandbox. Reads from `/tmp` are fine. So: GHA *steps* (run as the runner) stage inputs in `/tmp`; *agents* must WRITE under the workspace. Memory moved from `/tmp/memory` → `$GITHUB_WORKSPACE/.cc-memory`. Symptom before the fix: memory agent fell back to a false "no memory dir (local mode)" and nothing was recorded.
+- **`--allowedTools` gates Bash to specific commands** (`gh/glab/git/tsx/npx/node/cat`). `mkdir/printf/tee` are unavailable to agents — they write files with `cat` heredoc only, and dirs must be pre-created by a GHA step. A prompt that scares the agent ("everything is blocked") makes it give up; mirror the *working* post pattern instead.
+- **Shallow single-branch clone (`-b rewrite`) has no `origin/<other-branch>` tracking refs.** `push_mem` keyed off `origin/claude-reviewer/memory` (absent) → fell to `git checkout --orphan` → collided with the local branch the pre-fetch created → `fatal: a branch named 'claude-reviewer/memory' already exists`, failing every retry — masked by the retry loop's exit 0 (step showed "success", nothing pushed). Fix: `git fetch origin claude-reviewer/memory` then `git checkout -B claude-reviewer/memory FETCH_HEAD`.
+- **Memory agent must be handed the actual findings, not just counts.** Given only `confirmed:N`, it fabricated entries inferred from its cwd (wrong branch). Pass the confirmed findings (file:line + description) so `found-issues` records the real issues.
+- **gitleaks CLI v8 has no `-q`.** `gitleaks detect ... -q` prints usage and no-ops (the gate silently passes everything). Use `gitleaks detect --source <dir> --no-git --redact --no-banner`; non-zero exit = leaks.
+- **Log-branch name must be trigger-independent.** It was `${head.ref}-cc-review-output` on `pull_request` but `pr-N-cc-review-output` on dispatch → the same PR produced two names → cleanup (keyed on head.ref) orphaned the dispatch one. Fix: `pr-<N>-cc-review-output` everywhere, in both `cc-review.yml` and `cc-review-cleanup.yml`.
+
+## Testing the GHA without merging to a consumer's main
+
+- `gh workflow run cc-review.yml --repo <consumer> --ref <branch> -f pr_number=N` runs the workflow **from a branch ref** on real GitHub Actions — full live test (App token, clone, post, memory, log branch) with zero changes to the consumer's `main`. This is how the memory/gitleaks/naming fixes were verified before (and without needing) a merge. The workflow only needs to exist on the default branch to be dispatchable; it then executes the chosen ref's version.
+- `run-local.sh` proves the engine but NOT the CI sandbox (no sandbox locally) — `/tmp` writes succeed locally, so memory-write bugs are invisible there. Verify memory only via the `--ref` dispatch + the `claude-reviewer/memory` branch.
+
+## Quota
+
+- The GHA's `claude -p` and any concurrent local/interactive Claude share ONE account. Running heavy work in parallel with a CI review can exhaust the session limit mid-run (it did once — the review died in the squad after posting the overview). Sequence runs; stay idle while a GHA review is in flight.
+
+## Overview / diagram (2026-06-03 — design decisions, not yet implemented)
+
+- The overview+diagram is the **PR overview**: post ONCE on PR-open, then **edit in place** as the PR evolves (re-posting per run is the feats#12 "multiple overviews" bug). The overview agent must be conditional on PR state (existing bot overview? new commits? diagram still matches?).
+- Mermaid diagram → 1.0 standard in `docs/overview-diagram-standard.md`: render-safe (quote every label), **show calls AND decisions** (labeled edges + diamonds / `alt`/`opt`), type chosen for the change, emphasize changed nodes, 5–12 nodes. Studio to tune it: `~/.claude/work/cc-review/overview-diagram-studio.html`.
