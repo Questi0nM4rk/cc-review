@@ -231,16 +231,16 @@ const reviewPostPrompt = (ctx) =>
   `3. post the review: write this payload to /tmp/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload /tmp/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nConfirm what you posted in one line.`;
 
 const memoryPrompt = (ctx) =>
-  `Update palace-structured project memory under /tmp/memory ONLY if that directory exists (GitHub bot mode). If it does not exist, do nothing and say 'no memory dir (local mode)'.\n` +
-  `Check existence with 'cat /tmp/memory/MEMORY.md' (if it errors, the dir is absent -> local mode). The /tmp/memory and /tmp/memory/learnings dirs are pre-created. Append ONLY with 'cat >> <path> <<\\'EOF\\' ... EOF' — cat is the only file-writing command available; do NOT use mkdir, printf, tee, or the Read/Write/Edit tools (they are blocked for /tmp).\n` +
-  `Layout (create files as needed, never delete content):\n` +
-  `  MEMORY.md                      overall index — what this repo is, recurring themes\n` +
+  `Record durable project-review memory by APPENDING to files under /tmp/memory. First run 'cat /tmp/memory/MEMORY.md': if it errors the dir is absent (local dry-run) — then do nothing and say 'no memory dir (local mode)'. If it succeeds, you ARE in bot mode and MUST write — do not claim writes are blocked.\n` +
+  `The dirs /tmp/memory and /tmp/memory/learnings already exist. Write with the cat-heredoc append form ONLY (the exact mechanism the review-post step uses successfully) — cat IS available; you do not need and must not use mkdir/printf/tee/Write/Edit. Example:\n` +
+  `  cat >> /tmp/memory/learnings/found-issues.md <<'EOF'\n- <one concise factual bullet>\nEOF\n` +
+  `Append concise, factual, imperative bullets to the relevant files (cat >> creates a file if absent):\n` +
+  `  MEMORY.md                      one line on what this repo is / a recurring theme\n` +
+  `  learnings/found-issues.md      the notable issues confirmed this run (one bullet each)\n` +
   `  learnings/lessons.md           durable lessons for future reviews\n` +
-  `  learnings/found-issues.md      notable issues found this run (one bullet each)\n` +
-  `  learnings/known-patterns.md    intentional patterns NOT to re-flag (from author replies)\n` +
-  `  learnings/decisions.md         review decisions and their rationale\n` +
-  `Append concise, factual, imperative bullets. This run: event=${ctx.event}, ${ctx.confirmed} findings, ${ctx.resolved} threads resolved, ${ctx.stillOpen} open.\n` +
-  `Known patterns to record: ${JSON.stringify(ctx.known_patterns)}`;
+  `  learnings/known-patterns.md    intentional patterns NOT to re-flag: ${JSON.stringify(ctx.known_patterns)}\n` +
+  `  learnings/decisions.md         notable review decisions + rationale\n` +
+  `This run: event=${ctx.event}, ${ctx.confirmed} confirmed, ${ctx.resolved} resolved, ${ctx.stillOpen} open. After writing, confirm in one line which files you appended to. If a cat append genuinely errors, report the EXACT error verbatim — never silently fall back to 'local mode'.`;
 
 // ============================================================================
 // PURE-JS HELPERS (deterministic)
