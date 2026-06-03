@@ -240,6 +240,7 @@ const memoryPrompt = (ctx) =>
   `  .cc-memory/learnings/lessons.md        durable lessons for future reviews\n` +
   `  .cc-memory/learnings/known-patterns.md intentional patterns NOT to re-flag: ${JSON.stringify(ctx.known_patterns)}\n` +
   `  .cc-memory/learnings/decisions.md      notable review decisions + rationale\n` +
+  `Record the ACTUAL confirmed issues from THIS run verbatim in found-issues.md (do not invent or infer from the repo around you — use only this list):\n${ctx.findings && ctx.findings.length ? ctx.findings.map((f) => `  - ${f}`).join("\n") : "  (none confirmed this run)"}\n` +
   `This run: event=${ctx.event}, ${ctx.confirmed} confirmed, ${ctx.resolved} resolved, ${ctx.stillOpen} open. After writing, confirm in one line which files you appended to. If a cat append errors, report the EXACT error verbatim.`;
 
 // ============================================================================
@@ -558,7 +559,8 @@ if (post) {
 let memory = "skipped (nothing to record)";
 if (totals.confirmed > 0 || totals.resolved > 0 || totals.replied > 0) {
   phase("Memory");
-  memory = await agent(memoryPrompt({ event, confirmed: totals.confirmed, resolved: totals.resolved, stillOpen, known_patterns: knownPatterns }), { model: "sonnet", label: "memory", phase: "Memory" });
+  const memFindings = kept.map((e) => sanitizeContext(`${e.original?.file}:${e.original?.line} — ${e.original?.description}`, 180)).slice(0, 12);
+  memory = await agent(memoryPrompt({ event, confirmed: totals.confirmed, resolved: totals.resolved, stillOpen, known_patterns: knownPatterns, findings: memFindings }), { model: "sonnet", label: "memory", phase: "Memory" });
 }
 
 return { ok: true, platform, repo, prNumber, localDryRun, intent: intent.mode, difficulty, event, totals, threadActions, overview: triage.overview_markdown, payload, posted, memory };
