@@ -12,6 +12,10 @@
 #  (see cc-review-interactive.yml). The `cc-review` label and a manual
 #  workflow_dispatch are always-on overrides; the `no-review` label suppresses.
 #
+#  The shared pipeline (clone/prefetch/install/run/push) lives ONCE in the
+#  composite action .github/actions/cc-review-run — both this and the interactive
+#  workflow call it, so the heavy logic is edited in one place.
+#
 #  Requires repo secrets: CLAUDE_CODE_OAUTH_TOKEN, REVIEWER_APP_ID,
 #  REVIEWER_APP_PRIVATE_KEY. See the cc-review SPEC.md for GitHub App setup.
 # ============================================================================
@@ -86,181 +90,15 @@ jobs:
           echo "should_run=$RUN" >> "$GITHUB_OUTPUT"
           echo "Decision: should_run=$RUN"
 
-      - name: Clone cc-review bot (self-contained, no submodule)
+      # The whole pipeline (clone bot, prefetch diff + memory, install tooling, run the review,
+      # surface failures, push the log + memory branches) lives in the shared composite action.
+      - name: Run cc-review
         if: steps.gate.outputs.should_run == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git clone --depth 1 https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
-          echo "CC_REVIEW_BOT_DIR=/tmp/cc-review-bot" >> "$GITHUB_ENV"
-          mkdir -p /tmp/run
-          # Agents are sandboxed to the workspace and cannot write /tmp or mkdir — pre-create
-          # the scratch dir (post payloads) and the memory dir (learnings + per-PR review-state marker).
-          mkdir -p .cc-run .cc-memory/learnings
-
-      - name: Pre-fetch diff + project memory slice
-        if: steps.gate.outputs.should_run == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
-          REPO: ${{ github.repository }}
-        run: |
-          # Diff (with a local-git fallback for diffs too large for the API).
-          gh pr view "$PR_NUMBER" --json title,body,author,baseRefName,headRefName,files > /tmp/pr-meta.json
-          BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json); HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
-          if ! gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt 2>/dev/null; then
-            git fetch origin "$HEAD" 2>/dev/null || true
-            # core.quotepath=false: emit raw UTF-8 paths (not C-escaped "a/caf\303\251") so the
-            # parser and inline-comment posting see the same paths the gh API path produces.
-            git -c core.quotepath=false diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
-          fi
-          # Put the PR head on disk so file-reading agents (comment-mgmt) judge the PR's code,
-          # not the trigger ref. On a real pull_request event the checkout is already the head;
-          # on workflow_dispatch it is the dispatch ref, so fetch + check out the head here.
-          # Untracked .cc-run/.cc-memory survive a tracked-file checkout.
-          git fetch origin "$HEAD" 2>/dev/null && git checkout -q -f FETCH_HEAD 2>/dev/null || echo "PR-head checkout skipped (event already on head)"
-          # Stage this repo's memory slice INTO THE WORKSPACE (.cc-memory) — the brain writes
-          # there because the sandbox blocks /tmp writes. The slice ${REPO}/ also carries the
-          # per-PR review-state marker at ${REPO}/pr-<N>/review-state.json, so one archive restores both.
-          mkdir -p ".cc-memory/pr-${PR_NUMBER}"
-          if git -C /tmp/cc-review-bot fetch origin claude-reviewer/memory 2>/dev/null; then
-            git -C /tmp/cc-review-bot archive FETCH_HEAD "${REPO}/" 2>/dev/null \
-              | tar -x -C .cc-memory --strip-components=2 2>/dev/null || true
-          fi
-          [ -f .cc-memory/MEMORY.md ] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > .cc-memory/MEMORY.md
-          mkdir -p .cc-memory/learnings ".cc-memory/pr-${PR_NUMBER}"
-
-      - name: Install Claude Code + tsx + gitleaks
-        if: steps.gate.outputs.should_run == 'true'
-        run: |
-          npm install -g tsx
-          curl -fsSL https://claude.ai/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          # gitleaks — pinned + checksum-verified (hardcoded SHA, NOT fetched from the same
-          # release, so a tampered asset fails here). The log-branch push step gates on it.
-          GL_VER=8.30.1
-          GL_SHA=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL -o /tmp/gitleaks.tgz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz"
-          echo "${GL_SHA}  /tmp/gitleaks.tgz" | sha256sum -c -
-          tar -xzf /tmp/gitleaks.tgz -C "$HOME/.local/bin" gitleaks
-          "$HOME/.local/bin/gitleaks" version
-
-      - name: Run strict-review workflow
-        id: review
-        if: steps.gate.outputs.should_run == 'true'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
-          REPO: ${{ github.repository }}
-          CC_POST: "1"
-        run: |
-          # Workflow sub-agents do NOT inherit env vars — pass inputs via a file.
-          jq -n --arg pr "$PR_NUMBER" --arg repo "$REPO" --arg post "$CC_POST" \
-            '{pr_number:($pr|tonumber), repo:$repo, platform:"github", post:($post=="1"), ping_override:false}' > /tmp/cc-input.json
-          PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs'. Run it to completion and report its return value verbatim as JSON. The workflow reads PR number, repo, post-flag, and project config from /tmp/cc-input.json, /tmp, and .cc-review.yaml."
-          claude -p "$PROMPT" \
-            --model claude-sonnet-4-6 \
-            --output-format stream-json --verbose \
-            --allowedTools "Workflow,Bash(gh:*),Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
-            --permission-mode bypassPermissions \
-            | tee /tmp/run/session.jsonl
-          jq -r 'select(.type=="result") | .result' /tmp/run/session.jsonl > /tmp/run/result.txt 2>/dev/null || true
-          cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true
-
-      - name: Surface an incomplete / quota-failed run
-        # Runs even if the review step failed (always()), so a run that died mid-review — the
-        # classic usage/quota-limit kill — fails the job LOUDLY and posts a status, instead of
-        # leaving an overview with no verdict that looks like a clean pass.
-        if: always() && steps.gate.outputs.should_run == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
-          REVIEW_OUTCOME: ${{ steps.review.outcome }}
-        run: |
-          SESSION=/tmp/run/session.jsonl
-          RESULT=$(jq -c 'select(.type=="result")' "$SESSION" 2>/dev/null | tail -1)
-          IS_ERR=$(printf '%s' "$RESULT" | jq -r '.is_error // empty' 2>/dev/null)
-          REASON=""
-          if [ "$REVIEW_OUTCOME" = "failure" ] || [ "$REVIEW_OUTCOME" = "cancelled" ]; then
-            REASON="the review step did not finish (timeout, or the process was killed — often a usage/quota limit)"
-          elif [ ! -s "$SESSION" ] || [ -z "$RESULT" ]; then
-            REASON="the run ended without a final result (died mid-review — often a usage/quota limit)"
-          elif [ "$IS_ERR" = "true" ]; then
-            REASON="the run reported an error result"
-          fi
-          if [ -z "$REASON" ]; then echo "run completed cleanly"; exit 0; fi
-          echo "::error::cc-review did not complete: ${REASON}"
-          # Build the body with an explicit newline so the YAML indentation of a multi-line
-          # string literal does not leak leading spaces into line 2 (which GitHub would then
-          # render as an indented code block).
-          BODY="<!-- cc-review:status -->"$'\n'"**cc-review did not finish this run** — ${REASON}. No verdict was posted; any overview above may be stale. Re-run with \`@cc-review\` once resolved."
-          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --method POST -f body="$BODY" >/dev/null 2>&1 \
-            || echo "(could not post the incomplete-run status comment)"
-          exit 1
-
-      - name: Push run output to the ephemeral log branch
-        if: always() && steps.gate.outputs.should_run == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          # Ephemeral per-PR debug branch: pr-<N>-cc-review-output (trigger-independent name so
-          # cc-review-cleanup.yml — which keys on pr-<N> — always matches and deletes it on close).
-          LOG_BRANCH="pr-${PR_NUMBER}-cc-review-output"
-          WORK=$(mktemp -d); cd "$WORK"
-          git init -q; git config user.name "cc-review[bot]"; git config user.email "cc-review[bot]@users.noreply.github.com"
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git checkout -q --orphan out
-          mkdir -p run
-          cp /tmp/run/* run/ 2>/dev/null || true
-          # gitleaks gate: the run output (full PR diff + session transcript) is about to be
-          # pushed to a branch on the consumer repo. Scan it first and FAIL-CLOSED — skip the
-          # push if the scanner is missing or finds a secret. The mktemp git-init above bypasses
-          # the repo's own pre-commit hook, so this is the only secret scan on this artifact.
-          # (gitleaks v8 has no -q; --redact keeps any hit out of the CI log.)
-          if ! command -v gitleaks >/dev/null 2>&1; then
-            echo "::error::gitleaks unavailable — skipping log-branch push for PR #${PR_NUMBER} (fail-closed)"
-            exit 0
-          fi
-          if ! gitleaks detect --source run --no-git --redact --no-banner; then
-            echo "::error::gitleaks flagged a potential secret in the run output — skipping log-branch push for PR #${PR_NUMBER}"
-            exit 0
-          fi
-          printf '# cc-review run log — %s\n\nrun: https://github.com/%s/actions/runs/%s\n' "$LOG_BRANCH" "${{ github.repository }}" "$RUN_ID" > README.md
-          git add -A
-          git commit -q -m "cc-review run for ${LOG_BRANCH} ($(date -u +%FT%TZ))" || true
-          git push -f origin "out:refs/heads/${LOG_BRANCH}" || echo "log branch push failed (non-fatal)"
-
-      - name: Push project memory
-        if: always() && steps.gate.outputs.should_run == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
-        run: |
-          BOT=/tmp/cc-review-bot; SLICE="$REPO"; SRC="$GITHUB_WORKSPACE/.cc-memory"
-          [ -d "$SRC" ] || { echo "no .cc-memory to push"; exit 0; }
-          cd "$BOT"; git config user.name "cc-review[bot]"; git config user.email "cc-review[bot]@users.noreply.github.com"
-          push_mem() {
-            # Shallow single-branch clone has no origin/<branch> tracking ref — key off FETCH_HEAD.
-            if git fetch origin claude-reviewer/memory 2>/dev/null; then
-              git checkout -B claude-reviewer/memory FETCH_HEAD
-            else
-              git checkout --orphan claude-reviewer/memory; git rm -rf . 2>/dev/null || true
-              printf '# cc-review memory\n\nPer-project palace. Each top dir is one consumer repo.\n' > README.md
-              git add README.md; git commit -q -m "init memory"
-            fi
-            mkdir -p "$SLICE"
-            # Copy the whole staged slice back (learnings + the per-PR review-state marker pr-<N>/review-state.json).
-            cp -r "$SRC/." "$SLICE/" 2>/dev/null || true
-            git add "$SLICE/"
-            git diff --cached --quiet && { echo "no memory changes"; return 0; }
-            git commit -q -m "memory: ${REPO} PR #${PR_NUMBER}"; git push origin claude-reviewer/memory
-          }
-          for n in 1 2 3; do push_mem && break; echo "memory push retry $n"; sleep $((n*5)); done
+        uses: Questi0nM4rk/cc-review/.github/actions/cc-review-run@main
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          pr-number: ${{ steps.gate.outputs.pr_number }}
+          repo: ${{ github.repository }}
+          post: "1"
+          ping-override: "false"
