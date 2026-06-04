@@ -13,7 +13,9 @@
  *   detect                                  -> { platform, host, repo }
  *   context      --pr N                      -> { platform, repo, pr_number, base, head, title, body, author, diff }
  *   threads      --pr N                      -> { threads: NormThread[] }   (open/unresolved only)
- *   post-overview --pr N --body-file F       -> { id, url }
+ *   get-overview  --pr N                      -> { id, body } of the bot's marked overview comment, or { id: null }
+ *   post-overview --pr N --body-file F        -> { id, url }
+ *   edit-overview --pr N --comment-id ID --body-file F -> { id, url }   (edit the overview comment in place)
  *   post-review  --pr N --payload F          -> { posted, event }           (atomic on GH; note+discussions on GL)
  *   resolve      --pr N --thread ID          -> { resolved }
  *   reply        --pr N --thread ID --body-file F  -> { replied }
@@ -27,6 +29,10 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+
+// Hidden marker on the bot's overview comment. It doubles as the per-PR "already reviewed"
+// state flag (SPEC §4): get-overview matches it, and the brain embeds it in the overview body.
+const OVERVIEW_MARKER = "<!-- cc-review:overview -->";
 
 // --------------------------------------------------------------------------- //
 // shell + io helpers
@@ -169,9 +175,24 @@ const gh = {
       });
   },
 
+  getOverview(repo: string, pr: string) {
+    // --paginate merges array pages into one JSON array (no --jq, which would break that).
+    const r = run("gh", ["api", `repos/${repo}/issues/${pr}/comments`, "--paginate"]);
+    if (r.code !== 0) die("gh list comments failed", r.stderr);
+    const comments: Array<{ id: number; body: string }> = JSON.parse(r.stdout || "[]");
+    const hit = [...comments].reverse().find((c) => (c.body ?? "").includes(OVERVIEW_MARKER));
+    return hit ? { id: hit.id, body: hit.body } : { id: null };
+  },
+
   postOverview(repo: string, pr: string, body: string) {
     const r = run("gh", ["api", `repos/${repo}/issues/${pr}/comments`, "--method", "POST", "-f", `body=${body}`, "--jq", "{id:.id,url:.html_url}"]);
     if (r.code !== 0) die("gh post overview failed", r.stderr);
+    return JSON.parse(r.stdout);
+  },
+
+  editOverview(repo: string, commentId: string, body: string) {
+    const r = run("gh", ["api", `repos/${repo}/issues/comments/${commentId}`, "--method", "PATCH", "-f", `body=${body}`, "--jq", "{id:.id,url:.html_url}"]);
+    if (r.code !== 0) die("gh edit overview failed", r.stderr);
     return JSON.parse(r.stdout);
   },
 
@@ -254,9 +275,24 @@ const gl = {
       });
   },
 
+  getOverview(repo: string, iid: string) {
+    const r = run("glab", ["api", "--paginate", `projects/${glProject(repo)}/merge_requests/${iid}/notes`]);
+    if (r.code !== 0) die("glab list notes failed", r.stderr);
+    const notes: Array<{ id: number; body: string }> = JSON.parse(r.stdout || "[]");
+    const hit = [...notes].reverse().find((n) => (n.body ?? "").includes(OVERVIEW_MARKER));
+    return hit ? { id: hit.id, body: hit.body } : { id: null };
+  },
+
   postOverview(repo: string, iid: string, body: string) {
     const r = run("glab", ["api", `projects/${glProject(repo)}/merge_requests/${iid}/notes`, "--method", "POST", "-f", `body=${body}`]);
     if (r.code !== 0) die("glab post overview failed", r.stderr);
+    const n = JSON.parse(r.stdout);
+    return { id: n.id, url: n.web_url ?? "" };
+  },
+
+  editOverview(repo: string, iid: string, noteId: string, body: string) {
+    const r = run("glab", ["api", `projects/${glProject(repo)}/merge_requests/${iid}/notes/${noteId}`, "--method", "PUT", "-f", `body=${body}`]);
+    if (r.code !== 0) die("glab edit overview failed", r.stderr);
     const n = JSON.parse(r.stdout);
     return { id: n.id, url: n.web_url ?? "" };
   },
@@ -324,7 +360,7 @@ const gl = {
 function main() {
   const verb = process.argv[2];
   if (!verb || verb === "--help" || verb === "-h") {
-    process.stdout.write("verbs: detect | context | threads | post-overview | post-review | resolve | reply\n");
+    process.stdout.write("verbs: detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply\n");
     process.exit(verb ? 0 : 1);
   }
 
@@ -339,8 +375,15 @@ function main() {
       return out(d.platform === "github" ? gh.context(d.repo, requireFlag("pr")) : gl.context(d.repo, requireFlag("pr")));
     case "threads":
       return out({ threads: d.platform === "github" ? gh.threads(d.repo, requireFlag("pr")) : gl.threads(d.repo, requireFlag("pr")) });
+    case "get-overview":
+      return out(d.platform === "github" ? gh.getOverview(d.repo, requireFlag("pr")) : gl.getOverview(d.repo, requireFlag("pr")));
     case "post-overview":
       return out(d.platform === "github" ? gh.postOverview(d.repo, requireFlag("pr"), bodyFromFile()) : gl.postOverview(d.repo, requireFlag("pr"), bodyFromFile()));
+    case "edit-overview":
+      // GitHub edits a comment by its global id (--comment-id); GitLab needs the MR iid (--pr) + note id (--comment-id).
+      return out(d.platform === "github"
+        ? gh.editOverview(d.repo, requireFlag("comment-id"), bodyFromFile())
+        : gl.editOverview(d.repo, requireFlag("pr"), requireFlag("comment-id"), bodyFromFile()));
     case "post-review":
       return out(d.platform === "github" ? gh.postReview(d.repo, requireFlag("pr"), requireFlag("payload")) : gl.postReview(d.repo, requireFlag("pr"), requireFlag("payload")));
     case "resolve":

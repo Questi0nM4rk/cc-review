@@ -29,9 +29,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          LOG_BRANCH="${HEAD_REF}-cc-review-output"
+          LOG_BRANCH="pr-${PR_NUMBER}-cc-review-output"
           if gh api "repos/${REPO}/git/refs/heads/${LOG_BRANCH}" >/dev/null 2>&1; then
             gh api -X DELETE "repos/${REPO}/git/refs/heads/${LOG_BRANCH}" \
               && echo "Deleted ${LOG_BRANCH}" \

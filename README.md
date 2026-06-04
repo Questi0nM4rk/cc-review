@@ -21,32 +21,39 @@
 
 ## What it does
 
-On a PR it posts a **pre-review walkthrough** (business + technical summary, a mermaid diagram, and a `Difficulty: N/5` rating), then runs a strict review and posts **one atomic review**. It re-checks its own prior comments on every run — verifying fixes against the actual code — and **approves only when there are zero findings and zero unresolved threads**.
+On a **first review** it posts a **pre-review walkthrough** (business + technical summary, a mermaid diagram, a `Difficulty: N/5`), researches the web + its own memories/docs, runs a strict review, and posts **one atomic review**. On a **re-run** it re-checks its prior comments against the actual code, resolves what's genuinely fixed, and only re-reviews if the code changed significantly. It **approves only when there are zero findings and zero unresolved threads**.
 
 ```
 PR event / @cc-review ping
         │
   GitHub Actions: clone bot, generate App token, run the workflow headless
         │
-  strict-review.mjs  (the whole brain)
-   Triage (opus) ─ posts walkthrough + difficulty ─┐ rating scales the rest
-   Recon (haiku) → Review (2 opus·xhigh + 0/2/4 sonnet) → Grade → Verify
-   Comment-Mgmt (re-check prior threads) → Decide → Post → Memory
+  strict-review.mjs  (the whole brain) — first review vs re-run by the overview-comment marker
+   FIRST REVIEW
+     Holistic review (opus) ─ posts overview + difficulty ─┐ difficulty scales the rest
+     Gather (2 web-research agents + memories/docs + static tools)
+       → Squad (difficulty-scaled) → Dedup + Check (false-positive filter)
+       → Decide → Post → Memory
+   RE-RUN
+     all prior threads replied?  ─ no → "first finish prev review" (a @cc-review ping overrides)
+     yes → Comment-mgmt (resolve/reply) → significant change? → redraw overview in place + re-review · else done
         │
   One review (APPROVE / REQUEST_CHANGES) · threads resolved · memory + log branches updated
 ```
 
 ## How review depth scales (token-efficient + pedantic)
 
-The triage difficulty rating (1–5) deterministically picks the path:
+The holistic-review difficulty rating (1–5) deterministically picks the path:
 
-| Difficulty | Squad | Extra passes |
+| Difficulty | Squad (opus·xhigh anchors + sonnet specialists) | Extra passes |
 |---|---|---|
-| 1 (trivial) | 2 opus | — |
-| 2–3 (normal) | 2 opus + 2 sonnet | recon, grade |
-| 4–5 (hard) | 2 opus + 4 sonnet | recon, grade, per-finding verify |
+| 1 (trivial) | 1 opus | — |
+| 2 | 1 opus + 1 sonnet | gather, dedup + check |
+| 3 | 2 opus | gather, dedup + check |
+| 4 | 2 opus + 1 sonnet | gather, dedup + check |
+| 5 (hard) | 2 opus + 2 sonnet | gather, dedup + check |
 
-The 2 opus reviewers are the top-2 domains by a deterministic relevance score for the diff.
+The opus reviewers are the top domains by a deterministic relevance score for the diff. "Gather" = the two web-research agents + memories/docs + static tools; "check" = the single false-positive-filter agent (it replaces the older separate grade + verify passes).
 
 ## Configuration — `.cc-review.yaml`
 
@@ -70,12 +77,10 @@ known_patterns: ["Broad exception handlers in middleware are intentional."]
 
 **`@cc-review` ping — ALWAYS available**, even when `trigger: disabled`:
 ```
-@cc-review                                    full review
-@cc-review re-check the auth path             focused review
-@cc-review just verify my fixes and approve   recheck + conditional approve
+@cc-review                                    review now — and override the re-review gate
 @cc-review what does this change do?          answer-only, no review
 ```
-The message steers the run within fixed, safe bounds — it can never force an approval (the approval gate verifies fixes against the code).
+The only intent the message selects is **answer-only** (a question → a reply, no review). On a re-run it also **overrides** the "finish the previous review first" gate. It can never force an approval — the gate approves only on zero findings and zero unresolved threads, verified against the code.
 
 **Manual** — add the `cc-review` label, or `workflow_dispatch` with a PR number. The `no-review` label suppresses auto-runs.
 
@@ -94,7 +99,7 @@ The message steers the run within fixed, safe bounds — it can never force an a
 
 | Branch | Where | Contents |
 |---|---|---|
-| `claude-reviewer/memory` | bot repo | per-project palace: `MEMORY.md` + `learnings/{lessons,found-issues,known-patterns,decisions}.md` |
+| `claude-reviewer/memory` | bot repo | per-project learnings: `MEMORY.md` + `learnings/{lessons,found-issues,known-patterns,decisions}.md`; **and the per-PR research cache `<owner>/<repo>/pr-<N>/research/` (gather output, reused across re-runs)** |
 | `<source-branch>-cc-review-output` | your repo | **ephemeral** per-PR run log (diff, session, result); auto-deleted when the PR closes |
 | `claude-reviewer/transcripts` | your repo | per-PR last-run `session.jsonl` |
 

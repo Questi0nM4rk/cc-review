@@ -92,9 +92,12 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git clone --depth 1 https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
+          git clone --depth 1 -b rewrite https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
           echo "CC_REVIEW_BOT_DIR=/tmp/cc-review-bot" >> "$GITHUB_ENV"
-          mkdir -p /tmp/run /tmp/memory
+          mkdir -p /tmp/run
+          # Agents are sandboxed to the workspace and cannot write /tmp or mkdir — pre-create
+          # the scratch dir (post payloads) and the memory dir (learnings + per-PR research cache).
+          mkdir -p .cc-run .cc-memory/learnings
 
       - name: Pre-fetch diff + project memory slice
         if: steps.gate.outputs.should_run == 'true'
@@ -110,13 +113,16 @@ jobs:
             git fetch origin "$HEAD" 2>/dev/null || true
             git diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
           fi
-          # Memory slice: extract this repo's palace from the global memory branch.
-          if git -C /tmp/cc-review-bot fetch origin claude-reviewer/memory:claude-reviewer/memory 2>/dev/null; then
-            git -C /tmp/cc-review-bot archive claude-reviewer/memory "${REPO}/" 2>/dev/null \
-              | tar -x -C /tmp/memory --strip-components=2 2>/dev/null || true
+          # Stage this repo's memory slice INTO THE WORKSPACE (.cc-memory) — the brain writes
+          # there because the sandbox blocks /tmp writes. The slice ${REPO}/ also carries the
+          # per-PR research cache at ${REPO}/pr-<N>/research, so one archive restores both.
+          mkdir -p ".cc-memory/pr-${PR_NUMBER}/research"
+          if git -C /tmp/cc-review-bot fetch origin claude-reviewer/memory 2>/dev/null; then
+            git -C /tmp/cc-review-bot archive FETCH_HEAD "${REPO}/" 2>/dev/null \
+              | tar -x -C .cc-memory --strip-components=2 2>/dev/null || true
           fi
-          [ -f /tmp/memory/MEMORY.md ] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > /tmp/memory/MEMORY.md
-          mkdir -p /tmp/memory/learnings
+          [ -f .cc-memory/MEMORY.md ] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > .cc-memory/MEMORY.md
+          mkdir -p .cc-memory/learnings ".cc-memory/pr-${PR_NUMBER}/research"
 
       - name: Install Claude Code + tsx
         if: steps.gate.outputs.should_run == 'true'
@@ -138,7 +144,7 @@ jobs:
         run: |
           # Workflow sub-agents do NOT inherit env vars — pass inputs via a file.
           jq -n --arg pr "$PR_NUMBER" --arg repo "$REPO" --arg post "$CC_POST" \
-            '{pr_number:($pr|tonumber), repo:$repo, platform:"github", post:($post=="1")}' > /tmp/cc-input.json
+            '{pr_number:($pr|tonumber), repo:$repo, platform:"github", post:($post=="1"), ping_override:false}' > /tmp/cc-input.json
           PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs'. Run it to completion and report its return value verbatim as JSON. The workflow reads PR number, repo, post-flag, and project config from /tmp/cc-input.json, /tmp, and .cc-review.yaml."
           claude -p "$PROMPT" \
             --model claude-sonnet-4-6 \
@@ -153,12 +159,12 @@ jobs:
         if: always() && steps.gate.outputs.should_run == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref || format('pr-{0}', steps.gate.outputs.pr_number) }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          # Ephemeral per-PR debug branch: <source-branch>-cc-review-output.
-          # cc-review-cleanup.yml deletes it when the PR leaves the open state.
-          LOG_BRANCH="${HEAD_REF}-cc-review-output"
+          # Ephemeral per-PR debug branch: pr-<N>-cc-review-output (trigger-independent name so
+          # cc-review-cleanup.yml — which keys on pr-<N> — always matches and deletes it on close).
+          LOG_BRANCH="pr-${PR_NUMBER}-cc-review-output"
           WORK=$(mktemp -d); cd "$WORK"
           git init -q; git config user.name "cc-review[bot]"; git config user.email "cc-review[bot]@users.noreply.github.com"
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
@@ -177,19 +183,21 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
         run: |
-          BOT=/tmp/cc-review-bot; SLICE="$REPO"
+          BOT=/tmp/cc-review-bot; SLICE="$REPO"; SRC="$GITHUB_WORKSPACE/.cc-memory"
+          [ -d "$SRC" ] || { echo "no .cc-memory to push"; exit 0; }
           cd "$BOT"; git config user.name "cc-review[bot]"; git config user.email "cc-review[bot]@users.noreply.github.com"
           push_mem() {
-            git fetch origin claude-reviewer/memory 2>/dev/null || true
-            if git rev-parse --verify origin/claude-reviewer/memory >/dev/null 2>&1; then
-              git checkout -B claude-reviewer/memory origin/claude-reviewer/memory
+            # Shallow single-branch clone has no origin/<branch> tracking ref — key off FETCH_HEAD.
+            if git fetch origin claude-reviewer/memory 2>/dev/null; then
+              git checkout -B claude-reviewer/memory FETCH_HEAD
             else
               git checkout --orphan claude-reviewer/memory; git rm -rf . 2>/dev/null || true
               printf '# cc-review memory\n\nPer-project palace. Each top dir is one consumer repo.\n' > README.md
               git add README.md; git commit -q -m "init memory"
             fi
-            mkdir -p "$SLICE"; rm -rf "${SLICE:?}/MEMORY.md" "${SLICE:?}/learnings" 2>/dev/null || true
-            cp -r /tmp/memory/. "$SLICE/" 2>/dev/null || true
+            mkdir -p "$SLICE"
+            # Copy the whole staged slice back (learnings + the per-PR research cache pr-<N>/research).
+            cp -r "$SRC/." "$SLICE/" 2>/dev/null || true
             git add "$SLICE/"
             git diff --cached --quiet && { echo "no memory changes"; return 0; }
             git commit -q -m "memory: ${REPO} PR #${PR_NUMBER}"; git push origin claude-reviewer/memory

@@ -9,13 +9,14 @@ open TODOs.
 ## Layout
 
 - `.claude/workflows/strict-review.mjs` — the brain: the entire review pipeline as one Workflow script (phases below).
-- `scripts/review-platform.ts` — platform adapter: `detect | context | threads | post-overview | post-review | resolve | reply` (GitHub via `gh`, GitLab local).
-- `scripts/analysis-tools.ts` — semgrep/lizard runner used by Recon.
+- `scripts/review-platform.ts` — platform adapter: `detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply` (GitHub via `gh`, GitLab local).
+- `scripts/analysis-tools.ts` — semgrep/lizard runner used by the gather phase.
 - `scripts/run-local.sh` — local harness (lays down `/tmp` scaffolding, runs the brain via `claude -p`, `post=false`).
 - `scripts/verify-gate.test.mjs` — contract spec for the fetch identity gate (`node scripts/verify-gate.test.mjs`).
 - `lang-refs/` — per-language checklists reviewers pull with `cat`.
 - `.github/workflows/cc-review*.yml` — the GHA templates installed into consumer repos (review, interactive ping, cleanup).
-- `docs/` — `SPEC.md` (design), `lessons-learned.md`, `github-review-api.md`, `overview-diagram-standard.md`.
+- `SPEC.md` / `README.md` — at the repo root (spec + human guide).
+- `docs/` — `overview-diagram-standard.md` (render-verified mermaid standard), `pipeline-diagram.html` (engine-internals viewer), `lessons-learned.md`, `github-review-api.md`.
 
 ## Branch model — IMPORTANT
 
@@ -23,15 +24,18 @@ open TODOs.
 - `main` lags. The workflow is develop-on-`rewrite`, then PR `rewrite → main`.
 - The shallow single-branch clone means **there are no `origin/<other-branch>` tracking refs in CI** — fetch explicitly and use `FETCH_HEAD`.
 
-## Pipeline (strict-review.mjs)
+## Pipeline (strict-review.mjs) — see SPEC.md for the exact contract
 
-Fetch → **Triage** (opus·medium; posts the overview comment) → **Recon** (sonnet scanners + haiku tool-runner, gated) → **Review** (difficulty-scaled squad) → **Grade** (opus; false-positive filter, gated) → **Verify** (sonnet skeptic per finding, gated) → **Comment-mgmt** (one agent per prior open thread) → Decide → **Post** (gated on `args.post`/`CC_POST`) → **Memory**.
+Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-review:overview -->`) exists on the PR:
+
+- **First review** (marker absent): **Fetch** → **Holistic review** (opus·medium; reads the diff, emits overview + difficulty + `answer`-intent; **posts the overview first**) → **Gather** (2 web-backed research agents — ai-slop / general, via `WebSearch`/`WebFetch` — + memories/docs + haiku tool-runner; gated d≥2; **output cached per-PR**) → **Squad** (difficulty-scaled) → **Dedup + Check** (JS dedup + **one** opus false-positive-filter agent) → **Decide** → **Post** (gated) → **Memory**.
+- **Re-run** (marker present): **Fetch** → prior threads **all replied?** (no & auto-run → post `first finish prev review`, stop; ping → override) → **Comment-mgmt** (resolve/reply/keep + update memories) → **significant-change check** (JS prefilter + agent confirm) → if significant: redraw the overview **in place** + re-run gather → squad → … ; else reuse the cached research and end.
 
 ### Agent ladder (`PATH` table) — opus anchor always xhigh, scale by ADDING reviewers
-- d1: 1 opus · d2: 1 opus + 1 sonnet · d3: 2 opus · d4: 2 opus + 1 sonnet · d5: 2 opus + 2 sonnet
-- recon ≥ d2, grade ≥ d2, verify ≥ d4.
-- **Model-by-feature:** `LOW_STAKES_CATEGORY` (docs/chore) runs the deep slots on sonnet, not opus.
-- Triage passes the (minimized + sanitized) overview AND recon observations into the reviewers.
+- d1: 1 opus (no gather, no check) · d2: 1 opus + 1 sonnet · d3: 2 opus · d4: 2 opus + 1 sonnet · d5: 2 opus + 2 sonnet
+- gather ≥ d2, dedup+check ≥ d2. **The old separate Grade (opus) + Verify (sonnet skeptics) passes are GONE — folded into the one check agent.**
+- **Model-by-feature:** `LOW_STAKES_CATEGORY` (docs/chore) runs the opus slots on sonnet.
+- The squad gets the (minimized + sanitized) overview AND the gather observations; `pickSquad` ranks domains by relevance.
 - New findings are **deduped against existing open threads** (`dropAlreadyThreaded`) so a re-run never double-posts.
 - Comment-mgmt validates the author's reply **against the code first**, then resolves with a `Fixed:`/`Dismissed:` message, replies if still wrong, or keeps; intentional dismissals become `known_patterns` → memory.
 
@@ -65,17 +69,29 @@ Fetch → **Triage** (opus·medium; posts the overview comment) → **Recon** (s
 - **Memory write** can't be reproduced locally (no sandbox locally) — verify it via the `--ref` dispatch and check the `claude-reviewer/memory` branch.
 - **Syntax:** the brain uses top-level `return` (the Workflow runtime wraps the body), so `node --check` rejects it raw — wrap in `async function __wf(){ … }` first, then `node --check`.
 
-## Open TODOs (handoff — 2026-06-03)
+## Rebuild in progress (2026-06-04) — target = SPEC.md
 
-1. **Merge feats PR #14** (GHA fixes → feats `main`) so *auto-review on PR-open* uses them. Verified working via `--ref` dispatch; safety classifier blocks an agent from self-merging CI to a shared default branch — a human merges it.
-2. **Overview = post-once, edit-in-place.** The overview/diagram comment must be posted on PR-open then EDITED in place as the PR evolves. Make the overview agent conditional: on start, read PR state (existing bot overview comment? new commits since it was written? does the diagram still match the code?) → decide create / edit-in-place / leave. Today it re-posts every run (the feats#12 "multiple overviews" bug). Architecture: **one** edited-in-place overview comment + stacking inline review comments that are checked against user replies.
-3. **Bake the diagram 1.0 standard into `triagePrompt`** — see `docs/overview-diagram-standard.md` and the studio at `~/.claude/work/cc-review/overview-diagram-studio.html`. Calls + decisions are mandatory; render-safe (quoted labels); type chosen per change; emphasize changed nodes; 5–12 nodes.
-4. **Confirm/ship default `trigger: pr_open`** (on-create + ping, never every-push) and document it as user-overridable per project.
-5. Minor: the overview agent, blocked from `/tmp`, wrote `cc-overview.md` into `.cc-memory` (swept into the memory slice). Point `overviewPostPrompt` at a non-memory workspace path.
-6. Eventually PR `rewrite → main`.
+The brain is being rebuilt to the target workflow in `SPEC.md` (agreed from the hand-drawn
+design). The exact delta-vs-shipped **build list is SPEC.md §14**; the open prefs are **§15**.
+Headline changes: web-backed gatherers, a single **dedup+check** agent (grade+verify removed),
+a **per-PR research cache** (`pr-<N>/research/` on the memory branch, as *output* not memory),
+**marker-based** first-vs-re-run detection, **overview edit-in-place**, the **re-review
+hard-stop gate** with ping override, **`answer`-only** intent, and the **significant-change check**.
 
-## State of the world (as of handoff)
+CI mechanics (sandbox, `--allowedTools`, `FETCH_HEAD`, log/memory branches, gitleaks) are
+**unchanged** and still apply — see Hard CI constraints + lessons-learned. The brain rewrite
+also needs the GHA to stage/push the new research cache (a `.cc-run/` scratch dir + the
+`pr-<N>/research/` slice) the same way it stages `.cc-memory`.
 
-- Brain `rewrite` carries all fixes (identity gate, validator-layer removed, agent ladder, model-by-category, overview+recon passdown+sanitize, cross-run dedup, resolve-with-message, memory→workspace `.cc-memory`, memory gets real findings).
-- Full pipeline **verified live** on `Questi0nM4rk/feats` (#12/#13): overview, inline findings, re-run resolve/reply/dedup, log branch, cleanup-on-close, memory branch with correct content, gitleaks gate.
-- 7 bugs found + fixed this session — see `docs/lessons-learned.md`.
+Still outstanding from before the rebuild:
+- **Merge feats PR #14** (GHA fixes → feats `main`) — a human merges (classifier blocks self-merge).
+- Eventually PR `rewrite → main`.
+
+## State of the world (2026-06-04)
+
+- `SPEC.md` is the **exact target spec**; `docs/overview-diagram-standard.md` is render-verified
+  (mermaid v11 via headless Chrome); `docs/pipeline-diagram.html` is the engine-internals viewer.
+- The brain on `rewrite` still reflects the **pre-rebuild** pipeline (triage/recon/grade/verify).
+  The rebuild to SPEC is **underway** — do not treat the currently-shipped phases as the target.
+- Pre-rebuild pipeline was verified live on `Questi0nM4rk/feats` (#12/#13); 7 bugs fixed that
+  session — see `docs/lessons-learned.md`.

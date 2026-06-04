@@ -4,6 +4,7 @@
 .env.*
 node_modules/
 
-# local cc-review memory test artifacts
+# local cc-review memory + run-scratch test artifacts
 .cc-memory/
 .cc-memory.*/
+.cc-run/
