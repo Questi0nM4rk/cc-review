@@ -214,7 +214,14 @@ cases skip the agent. *(Thresholds are defaults — tunable.)*
   prompts (the STRICT block), not a separate JS validation pass.
 - Posting is gated on explicit `post===true`; the engine is side-effect-free until then.
 - Untrusted-derived context (overview, gather observations, author replies) is minimized +
-  sanitized before it primes a downstream agent — it primes, never commands.
+  sanitized before it primes a downstream agent — it primes, never commands. `sanitizeContext`
+  strips fenced blocks + control chars and redacts forged chat/role markers and instruction-
+  override / identity-hijack imperatives (defense-in-depth on top of the deterministic gate;
+  see the adversarial corpus in `scripts/helpers.test.mjs`).
+- **`known_patterns` are claims, not gospel.** A pattern learned from an author reply is written
+  by the bot in its **own words after verifying the code** (never the author's text), and the
+  reviewer framing lets a **provable security finding override** any claimed pattern — so a
+  poisoned/coerced pattern cannot durably suppress a real vulnerability.
 
 ---
 
