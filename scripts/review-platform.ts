@@ -126,6 +126,7 @@ interface NormThread {
   original_body: string; // first comment (the bot's finding)
   author_replied: boolean;
   latest_reply: string;
+  bot_replied_last: boolean; // newest comment is the bot's (it opened the thread) — nothing new to answer
   comment_db_id?: number; // GH only — REST id of the first review comment, for in_reply_to
 }
 
@@ -153,7 +154,7 @@ const gh = {
 
   threads(repo: string, pr: string): NormThread[] {
     const [owner, name] = repo.split("/");
-    const q = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:50){nodes{databaseId author{login} body path line}}}}}}}`;
+    const q = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:50){pageInfo{hasNextPage} nodes{databaseId author{login} body path line}}}}}}}`;
     const r = run("gh", ["api", "graphql", "-f", `query=${q}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `pr=${pr}`]);
     if (r.code !== 0) die("gh graphql reviewThreads failed", r.stderr);
     const nodes = JSON.parse(r.stdout)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
@@ -162,14 +163,23 @@ const gh = {
       .map((t: any): NormThread => {
         const cs = t.comments?.nodes ?? [];
         const first = cs[0] ?? {};
+        const last = cs.length ? cs[cs.length - 1] : first;
         const replies = cs.slice(1);
         const lastReply = replies.length ? replies[replies.length - 1] : null;
+        // The bot opened the thread, so its login == first.author. "Bot spoke last" means
+        // no new human comment since the bot's last word -> nothing to re-reply to. If the
+        // comment list was truncated (>50), we can't see the true newest comment, so fail
+        // SAFE: treat it as "not bot-last" so the reply is allowed (a redundant note beats
+        // silencing the bot on a thread a human may have just commented on).
+        const truncated = t.comments?.pageInfo?.hasNextPage === true;
+        const botLogin = first.author?.login;
         return {
           id: t.id,
           path: first.path ?? "", line: first.line ?? 0,
           original_body: first.body ?? "",
           author_replied: replies.length > 0,
           latest_reply: lastReply?.body ?? "",
+          bot_replied_last: !truncated && !!botLogin && last.author?.login === botLogin,
           comment_db_id: first.databaseId,
         };
       });
@@ -199,6 +209,21 @@ const gh = {
   postReview(repo: string, pr: string, payloadFile: string) {
     // One atomic review. The contract in docs/github-review-api.md.
     const payload = JSON.parse(readFileSync(payloadFile, "utf8"));
+    // Idempotency: the body carries an integrity marker (<!-- cc-review:review <hash> -->).
+    // If a prior review already bears the SAME marker, this is a retry of an identical
+    // review (e.g. after a partial-post failure) — skip it instead of double-posting.
+    const marker = (String(payload.body ?? "").match(/<!-- cc-review:review \S+ -->/) ?? [])[0];
+    if (marker) {
+      // --paginate (no --jq) merges pages into one JSON array; parse it ourselves (the
+      // getOverview pattern) rather than --jq, which applies per-page and is fragile.
+      const existing = run("gh", ["api", `repos/${repo}/pulls/${pr}/reviews`, "--paginate"]);
+      if (existing.code === 0) {
+        const reviews: Array<{ body?: string }> = JSON.parse(existing.stdout || "[]");
+        if (reviews.some((rv) => (rv.body ?? "").includes(marker))) {
+          return { posted: false, duplicate: true, event: payload.event };
+        }
+      }
+    }
     const body = { event: payload.event, body: payload.body ?? "", comments: payload.comments ?? [] };
     const r = run("gh", ["api", `repos/${repo}/pulls/${pr}/reviews`, "--method", "POST", "--input", "-"], JSON.stringify(body));
     if (r.code !== 0) die("gh post-review failed", r.stderr);
@@ -262,8 +287,10 @@ const gl = {
       .map((d: any): NormThread => {
         const notes = d.notes ?? [];
         const first = notes[0] ?? {};
+        const last = notes.length ? notes[notes.length - 1] : first;
         const replies = notes.slice(1);
         const lastReply = replies.length ? replies[replies.length - 1] : null;
+        const botUser = first.author?.username;
         return {
           id: String(d.id),
           path: first.position?.new_path ?? first.position?.old_path ?? "",
@@ -271,6 +298,7 @@ const gl = {
           original_body: first.body ?? "",
           author_replied: replies.length > 0,
           latest_reply: lastReply?.body ?? "",
+          bot_replied_last: !!botUser && last.author?.username === botUser,
         };
       });
   },
@@ -304,6 +332,18 @@ const gl = {
     //   - APPROVE          -> POST .../approve ; REQUEST_CHANGES -> leave unapproved
     const payload = JSON.parse(readFileSync(payloadFile, "utf8"));
     const proj = glProject(repo);
+    // Idempotency (best-effort; GitLab has no atomic review): the summary note carries the
+    // integrity marker. If a prior note already bears it, this review was posted — skip the retry.
+    const marker = (String(payload.body ?? "").match(/<!-- cc-review:review \S+ -->/) ?? [])[0];
+    if (marker) {
+      const notesR = run("glab", ["api", "--paginate", `projects/${proj}/merge_requests/${iid}/notes`]);
+      if (notesR.code === 0) {
+        const notes: Array<{ body?: string }> = JSON.parse(notesR.stdout || "[]");
+        if (notes.some((n) => (n.body ?? "").includes(marker))) {
+          return { posted: false, duplicate: true, event: payload.event };
+        }
+      }
+    }
     const mr = gl.mr(repo, iid);
     const refs = mr.diff_refs ?? {}; // base_sha, head_sha, start_sha — required for inline positioning
     const fellBack: string[] = [];

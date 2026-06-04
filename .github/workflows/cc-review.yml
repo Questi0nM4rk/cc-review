@@ -170,6 +170,37 @@ jobs:
           jq -r 'select(.type=="result") | .result' /tmp/run/session.jsonl > /tmp/run/result.txt 2>/dev/null || true
           cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true
 
+      - name: Surface an incomplete / quota-failed run
+        # Runs even if the review step failed (always()), so a run that died mid-review — the
+        # classic usage/quota-limit kill — fails the job LOUDLY and posts a status, instead of
+        # leaving an overview with no verdict that looks like a clean pass.
+        if: always() && steps.gate.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        run: |
+          SESSION=/tmp/run/session.jsonl
+          RESULT=$(jq -c 'select(.type=="result")' "$SESSION" 2>/dev/null | tail -1)
+          IS_ERR=$(printf '%s' "$RESULT" | jq -r '.is_error // empty' 2>/dev/null)
+          REASON=""
+          if [ "$REVIEW_OUTCOME" = "failure" ] || [ "$REVIEW_OUTCOME" = "cancelled" ]; then
+            REASON="the review step did not finish (timeout, or the process was killed — often a usage/quota limit)"
+          elif [ ! -s "$SESSION" ] || [ -z "$RESULT" ]; then
+            REASON="the run ended without a final result (died mid-review — often a usage/quota limit)"
+          elif [ "$IS_ERR" = "true" ]; then
+            REASON="the run reported an error result"
+          fi
+          if [ -z "$REASON" ]; then echo "run completed cleanly"; exit 0; fi
+          echo "::error::cc-review did not complete: ${REASON}"
+          # Build the body with an explicit newline so the YAML indentation of a multi-line
+          # string literal does not leak leading spaces into line 2 (which GitHub would then
+          # render as an indented code block).
+          BODY="<!-- cc-review:status -->"$'\n'"**cc-review did not finish this run** — ${REASON}. No verdict was posted; any overview above may be stale. Re-run with \`@cc-review\` once resolved."
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --method POST -f body="$BODY" >/dev/null 2>&1 \
+            || echo "(could not post the incomplete-run status comment)"
+          exit 1
+
       - name: Push run output to the ephemeral log branch
         if: always() && steps.gate.outputs.should_run == 'true'
         env:

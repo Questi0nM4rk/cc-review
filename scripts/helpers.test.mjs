@@ -21,7 +21,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 const BRAIN = fileURLToPath(new URL("../.claude/workflows/strict-review.mjs", import.meta.url));
 const SENTINEL = "// === END PURE HELPERS (test-extraction boundary) ===";
 const EXPORTS = [
-  "changedFiles", "addedLineCount", "sanitizeContext", "dropAlreadyThreaded",
+  "changedFiles", "addedLineCount", "sanitizeContext", "dropAlreadyThreaded", "selectReplies",
   "langsForDiff", "globToRe", "applyIgnorePaths", "mergeLangs", "buildProjectContext",
   "normalizeDomain", "relevanceScores", "pickSquad", "dedup", "stampHash",
   "buildPayload", "difficultyPath", "fixMermaid", "sigChangePrefilter",
@@ -261,6 +261,57 @@ test("buildPayload APPROVE has the clean-bill body and no comments", () => {
 test("stampHash is deterministic and content-sensitive", () => {
   assert.equal(H.stampHash({ a: 1, b: [2, 3] }), H.stampHash({ a: 1, b: [2, 3] }));
   assert.notEqual(H.stampHash({ a: 1 }), H.stampHash({ a: 2 }));
+});
+
+test("buildPayload embeds the integrity hash as a review marker (idempotency key)", () => {
+  const mk = () => H.buildPayload([
+    { verdict: "confirmed", original: { file: "a.ts", line: 5, description: "Fix it", in_diff: true } },
+  ], "REQUEST_CHANGES");
+  const p1 = mk();
+  // marker present in the body and equal to the _integrity hash (what the adapter dedups on)
+  assert.match(p1.body, /<!-- cc-review:review fnv1a32:[0-9a-f]{8} -->/);
+  assert.ok(p1.body.includes(`<!-- cc-review:review ${p1._integrity} -->`));
+  // identical findings -> identical marker (so a retry is recognized as a duplicate)
+  assert.equal(mk().body, p1.body);
+  // different findings -> different marker
+  const p2 = H.buildPayload([
+    { verdict: "confirmed", original: { file: "a.ts", line: 6, description: "Other", in_diff: true } },
+  ], "REQUEST_CHANGES");
+  assert.notEqual(p2._integrity, p1._integrity);
+});
+
+// ---------------------------------------------------------------------------
+// selectReplies  (the #9 re-reply guard)
+// ---------------------------------------------------------------------------
+test("selectReplies suppresses a re-reply when the bot already has the last word", () => {
+  const threads = [
+    { id: "t1", comment_db_id: 11, bot_replied_last: true },  // bot spoke last -> skip reply
+    { id: "t2", comment_db_id: 22, bot_replied_last: false },  // author spoke last -> answer
+  ];
+  const actions = [
+    { thread_id: "t1", action: "reply", reply_body: "still broken" },
+    { thread_id: "t2", action: "reply", reply_body: "still broken" },
+  ];
+  const out = H.selectReplies(actions, threads);
+  assert.deepEqual(out.map((r) => r.thread_id), ["t2"]);
+  assert.equal(out[0].comment_db_id, 22);
+});
+
+test("selectReplies always posts a resolve message even if the bot spoke last", () => {
+  const threads = [{ id: "t1", comment_db_id: 11, bot_replied_last: true }];
+  const actions = [{ thread_id: "t1", action: "resolve", reply_body: "Fixed: handled the null case" }];
+  const out = H.selectReplies(actions, threads);
+  assert.equal(out.length, 1);
+  assert.match(out[0].reply_body, /^Fixed:/);
+});
+
+test("selectReplies drops actions with no reply_body and 'keep' actions", () => {
+  const threads = [{ id: "t1", bot_replied_last: false }, { id: "t2", bot_replied_last: false }];
+  const actions = [
+    { thread_id: "t1", action: "keep" },
+    { thread_id: "t2", action: "reply" }, // no reply_body
+  ];
+  assert.deepEqual(H.selectReplies(actions, threads), []);
 });
 
 // ---------------------------------------------------------------------------
