@@ -1,0 +1,37 @@
+# ============================================================================
+#  ci — tests for the cc-review bot REPO ITSELF (not a consumer's PRs).
+#  Runs the deterministic-helper unit tests + the brain syntax gate on every
+#  push to main and every PR. Cheap, no secrets, no Claude usage — distinct
+#  from cc-review.yml (which reviews consumer PRs via `claude -p`).
+# ============================================================================
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Brain syntax gate
+        run: node scripts/check-brain.mjs
+
+      - name: Deterministic-helper unit tests
+        run: node --test scripts/helpers.test.mjs
+
+      - name: Fetch identity-gate contract test
+        run: node scripts/verify-gate.test.mjs

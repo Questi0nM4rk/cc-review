@@ -304,7 +304,7 @@ function sanitizeContext(s, max = 600) {
   if (!s) return "";
   return String(s)
     .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[ -]/g, " ")
+    .replace(/[\x00-\x1f\x7f]/g, " ")
     .replace(/\b(ignore|disregard|forget|override|bypass)\b[^.\n]{0,48}\b(instruction|instructions|prompt|rules?|above|previous|system)\b/gi, "[redacted-injection]")
     .replace(/\s+/g, " ")
     .trim()
@@ -327,7 +327,7 @@ function langsForDiff(files) {
 }
 
 function globToRe(g) {
-  const esc = g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "").replace(/\*/g, "[^/]*").replace(//g, ".*");
+  const esc = g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\x01/g, ".*");
   return new RegExp(`^${esc}$`);
 }
 function applyIgnorePaths(files, globs) {
@@ -444,6 +444,13 @@ function sigChangePrefilter(diff, files, meta) {
   if (nearFiles || nearLines) return { decided: false, borderline: true, signal };
   return { decided: true, significant: false, signal };
 }
+
+// === END PURE HELPERS (test-extraction boundary) ===
+// Everything ABOVE this line is declarations only (constants, schemas, prompt
+// builders, deterministic helpers) — no injected Workflow globals, no top-level
+// await/return — so scripts/helpers.test.mjs slices the file here, strips the one
+// `export`, and dynamic-imports it to test the REAL shipped source. Keep all pure
+// helpers above this marker; everything below uses agent()/phase()/args/await.
 
 // ============================================================================
 // ORCHESTRATION
