@@ -88,8 +88,8 @@ jobs:
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           git clone --depth 1 https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
           echo "CC_REVIEW_BOT_DIR=/tmp/cc-review-bot" >> "$GITHUB_ENV"
-          # Agents write under the workspace (sandbox blocks /tmp writes): scratch + memory + research cache.
-          mkdir -p /tmp/run .cc-run ".cc-memory/learnings" ".cc-memory/pr-${PR}/research"
+          # Agents write under the workspace (sandbox blocks /tmp writes): scratch + memory + review-state marker.
+          mkdir -p /tmp/run .cc-run ".cc-memory/learnings" ".cc-memory/pr-${PR}"
           gh pr view "$PR" --json title,body,author,baseRefName,headRefName,files > /tmp/pr-meta.json
           if ! gh pr diff "$PR" > /tmp/pr-diff.txt 2>/dev/null; then
             BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json); HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)

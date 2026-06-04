@@ -27,8 +27,8 @@ open TODOs.
 
 Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-review:overview -->`) exists on the PR:
 
-- **First review** (marker absent): **Fetch** → **Holistic review** (opus·medium; reads the diff, emits overview + difficulty + `answer`-intent; **posts the overview first**) → **Gather** (2 web-backed research agents — ai-slop / general, via `WebSearch`/`WebFetch` — + memories/docs + haiku tool-runner; gated d≥2; **output cached per-PR**) → **Squad** (difficulty-scaled) → **Dedup + Check** (JS dedup + **one** opus false-positive-filter agent) → **Decide** → **Post** (gated) → **Memory**.
-- **Re-run** (marker present): **Fetch** → prior threads **all replied?** (no & auto-run → post `first finish prev review`, stop; ping → override) → **Comment-mgmt** (resolve/reply/keep + update memories) → **significant-change check** (JS prefilter + agent confirm) → if significant: redraw the overview **in place** + re-run gather → squad → … ; else reuse the cached research and end.
+- **First review** (marker absent): **Fetch** → **Holistic review** (opus·medium; reads the diff, emits overview + difficulty + `answer`-intent; **posts the overview first**) → **Gather** (2 web-backed research agents — ai-slop / general, via `WebSearch`/`WebFetch` — + memories/docs + haiku tool-runner; gated d≥2) → **Squad** (difficulty-scaled) → **Dedup + Check** (JS dedup + **one** opus false-positive-filter agent) → **Decide** → **Post** (gated; also stamps the per-PR review-state marker) → **Memory**.
+- **Re-run** (marker present): **Fetch** → prior threads **all replied?** (no & auto-run → post `first finish prev review`, stop; ping → override) → **Comment-mgmt** (resolve/reply/keep + update memories) → **significant-change check** (JS prefilter + agent confirm) → the **squad re-reviews either way**; if significant it also re-runs gather + redraws the overview **in place**, else it reviews research-less and leaves the overview untouched.
 
 ### Agent ladder (`PATH` table) — opus anchor always xhigh, scale by ADDING reviewers
 - d1: 1 opus (no gather, no check) · d2: 1 opus + 1 sonnet · d3: 2 opus · d4: 2 opus + 1 sonnet · d5: 2 opus + 2 sonnet
@@ -73,14 +73,15 @@ Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-re
 The brain is being rebuilt to the target workflow in `SPEC.md` (agreed from the hand-drawn
 design). The exact delta-vs-shipped **build list is SPEC.md §14**; the open prefs are **§15**.
 Headline changes: web-backed gatherers, a single **dedup+check** agent (grade+verify removed),
-a **per-PR research cache** (`pr-<N>/research/` on the memory branch, as *output* not memory),
-**marker-based** first-vs-re-run detection, **overview edit-in-place**, the **re-review
-hard-stop gate** with ping override, **`answer`-only** intent, and the **significant-change check**.
+a tiny **per-PR review-state marker** (`pr-<N>/review-state.json` on the memory branch — head sha +
+file count, *output* not memory; an earlier "research cache" that stored gather observations was
+**cut** because nothing read them back), **marker-based** first-vs-re-run detection, **overview
+edit-in-place**, the **re-review hard-stop gate** with ping override, **`answer`-only** intent, and
+the **significant-change check**.
 
 CI mechanics (sandbox, `--allowedTools`, `FETCH_HEAD`, log/memory branches, gitleaks) are
-**unchanged** and still apply — see Hard CI constraints + lessons-learned. The brain rewrite
-also needs the GHA to stage/push the new research cache (a `.cc-run/` scratch dir + the
-`pr-<N>/research/` slice) the same way it stages `.cc-memory`.
+**unchanged** and still apply — see Hard CI constraints + lessons-learned. The GHA stages/pushes the
+`.cc-run/` scratch dir + the `pr-<N>/` slice (review-state marker) the same way it stages `.cc-memory`.
 
 Still outstanding from before the rebuild:
 - **Merge feats PR #14** (GHA fixes → feats `main`) — a human merges (classifier blocks self-merge).

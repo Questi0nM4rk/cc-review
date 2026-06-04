@@ -91,12 +91,11 @@ review. Accepted.)
 | 1 | **Fetch** — diff + PR meta + prior threads via `review-platform.ts` | sonnet | always | context |
 | 2 | **Holistic review** — reads the **diff only**; emits overview walkthrough (prose + one mermaid diagram to `docs/overview-diagram-standard.md`), **difficulty 1–5**, and detects `answer`-intent. **Posts the overview first** (with the marker). | opus · medium | always | overview, difficulty |
 | 3 | **Gather** (parallel) — see §6 | sonnet ×2 + haiku | difficulty ≥ 2 | observations + signals |
-| 4 | **Cache** the gather output for this PR (§7) | JS | difficulty ≥ 2 | persisted research |
-| 5 | **Squad** — difficulty-scaled count + model + domain (§8); each reviewer gets overview + routed observations + tool signals + memories | opus·xhigh + sonnet | reviewing | findings |
-| 6 | **Dedup + check** — JS dedup by `file:line`, then **one** agent filters false positives ("review if true") | JS + opus · high | findings>0, difficulty ≥ 2 | confirmed findings |
-| 7 | **Decide** — `APPROVE` iff **0 findings AND 0 unresolved threads**, else `REQUEST_CHANGES` | JS | always | verdict |
-| 8 | **Post** — review + inline findings + verdict via adapter | sonnet | `post===true` | posted |
-| 9 | **Memory** — learnings to the memory branch (§7) | sonnet | something to record |
+| 4 | **Squad** — difficulty-scaled count + model + domain (§8); each reviewer gets overview + routed observations + tool signals + memories | opus·xhigh + sonnet | reviewing | findings |
+| 5 | **Dedup + check** — JS dedup by `file:line`, then **one** agent filters false positives ("review if true") | JS + opus · high | findings>0, difficulty ≥ 2 | confirmed findings |
+| 6 | **Decide** — `APPROVE` iff **0 findings AND 0 unresolved threads**, else `REQUEST_CHANGES` | JS | always | verdict |
+| 7 | **Post** — review + inline findings + verdict via adapter; then stamp the per-PR **review-state marker** (head sha + file count, §7) | sonnet | `post===true` | posted |
+| 8 | **Memory** — learnings to the memory branch (§7) | sonnet | something to record |
 
 ### 5.B Re-run (marker present)
 
@@ -107,10 +106,12 @@ review. Accepted.)
 3. **Comment management** (one agent per thread, sonnet): validate against the **current code first**,
    then `resolve` (with a `Fixed:`/`Dismissed:` message) / `reply` / `keep`. Intentional
    dismissals become `known_patterns` → memory. **Update/save memories.**
-4. **Significant-change check** (§9): **JS prefilter → agent confirms** borderline cases.
-   - **Not significant** → **reuse the cached research/docs** (§7); end after comment handling — no fresh deep review.
+4. **Significant-change check** (§9): **JS prefilter → agent confirms** borderline cases. The squad
+   **re-reviews on every re-run** regardless; the check gates only the *expensive extras*:
+   - **Not significant** → leave the overview comment untouched and **skip web research** (the squad
+     reviews research-less) → dedup+check → decide → post.
    - **Significant** → **redraw the overview IN PLACE** (edit the existing comment, never re-post)
-     + **re-run gather** (fresh research) → squad → dedup+check → decide → post.
+     + **run gather** (fresh web research) → squad → dedup+check → decide → post.
 
 ### Difficulty → PATH (deterministic JS table)
 
@@ -155,10 +156,12 @@ The two web researchers replace the old offline recon scanners; they are the sam
 All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<owner>/<repo>/`.
 
 - **Learnings** (durable, cross-PR): `MEMORY.md` + `learnings/{found-issues,lessons,known-patterns,decisions}.md`.
-- **Per-PR research cache (NEW)** — `<owner>/<repo>/pr-<N>/research/` holding the gather output
-  as **run output, not learned memory**: `ai-slop.json`, `general.json`, `docs.json`,
-  `tools.json`, and `meta.json` with `reviewed_head_sha`. **Reused** on a re-run; **refreshed**
-  only when the significant-change check fires (§9).
+- **Per-PR review-state marker** — `<owner>/<repo>/pr-<N>/review-state.json`, a tiny stamp
+  (`reviewed_head_sha`, `reviewed_file_count`) written as **run output, not learned memory** on
+  every posted review. The significant-change check (§9) diffs the current head against it; it is
+  **not** review context and is never fed back to a reviewer. (Gather observations are deliberately
+  **not** persisted — an earlier "research cache" stored them but nothing ever read them back, so it
+  was dropped.)
 - **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on re-runs.
 - **Log branch** — `pr-<N>-cc-review-output` in the **consumer** repo; per-PR run artifacts;
   **deleted on PR close** by `cc-review-cleanup.yml`. A gitleaks gate scans run output before push.
@@ -182,7 +185,7 @@ opus·xhigh anchors; the next `sonnetCount` run on sonnet specialists. Same inpu
 ## 9. Significant-change check (re-run, phase 5.B.4)
 
 **JS prefilter (cheap, deterministic):** compare the current PR head against `reviewed_head_sha`
-from the research cache. Flag as significant if **any of**: a file added or removed; OR
+from the review-state marker (§7). Flag as significant if **any of**: a file added or removed; OR
 > 25% of the previously-reviewed files changed; OR > 150 net added lines since the last review.
 **Agent confirm (sonnet):** only for cases **near** the thresholds (e.g. within 20%), an agent
 judges whether the change is substantive enough to warrant a fresh holistic pass. Clear-cut
@@ -248,7 +251,7 @@ off `FETCH_HEAD`.
 
 1. **Web-backed gatherers** — recon scanners become two `WebSearch`/`WebFetch` agents (ai-slop / general).
 2. **Single dedup+check agent** — replace the separate `grade` (opus) and `verify` (sonnet skeptics) phases with JS dedup + one false-positive-filter agent.
-3. **Per-PR research cache** — new persistence namespace (`pr-<N>/research/`) + reuse/refresh logic keyed on `reviewed_head_sha`.
+3. **Per-PR review-state marker** — a tiny `pr-<N>/review-state.json` stamp (`reviewed_head_sha`, `reviewed_file_count`) for the significant-change check. (A broader "research cache" was considered but cut — its observations were written and never read back.)
 4. **Overview edit-in-place + marker-based first-vs-re-run detection.**
 5. **Re-review hard-stop gate** (`first finish prev review`) with ping override.
 6. **`answer` mode retained; focused/recheck removed.**
