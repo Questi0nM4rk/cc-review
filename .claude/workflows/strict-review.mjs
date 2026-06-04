@@ -190,7 +190,7 @@ const holisticPrompt = (diff, threadCount) =>
   `${STRICT}\n\n` +
   `You are the HOLISTIC REVIEW pass. Read the diff and produce the PR overview — orientation, not findings.\n\n` +
   `1. category: feature | rewrite | refactor | bugfix | perf | docs | test | chore | security | other. Pick the dominant one.\n` +
-  `2. difficulty: integer 1-5. 1 = trivial (docs, tiny config). 3 = a normal feature/bugfix. 5 = large rewrite, concurrency, security-sensitive, cross-cutting. Be honest — this scales review depth.\n` +
+  `2. difficulty: integer 1-5. 1 = trivial (docs, tiny config). 3 = a normal feature/bugfix. 5 = large rewrite, concurrency, security-sensitive, cross-cutting. Be honest — this scales review depth. FLOOR: any change that adds or touches security-sensitive code (SQL/command/path execution, auth, crypto, secrets, deserialization, or user input reaching a sink) is AT LEAST 3 regardless of size — a small risky diff is NOT trivial.\n` +
   `3. overview_markdown: a CodeRabbit-style pre-review walkthrough:\n` +
   `   - A short heading line with 'Difficulty: N/5'.\n` +
   `   - 2-4 sentences on what this change ACHIEVES — business intent first, then the technical flow.\n` +
