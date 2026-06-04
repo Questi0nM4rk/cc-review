@@ -129,12 +129,22 @@ jobs:
           [ -f .cc-memory/MEMORY.md ] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > .cc-memory/MEMORY.md
           mkdir -p .cc-memory/learnings ".cc-memory/pr-${PR_NUMBER}/research"
 
-      - name: Install Claude Code + tsx
+      - name: Install Claude Code + tsx + gitleaks
         if: steps.gate.outputs.should_run == 'true'
         run: |
           npm install -g tsx
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # gitleaks — pinned + checksum-verified (hardcoded SHA, NOT fetched from the same
+          # release, so a tampered asset fails here). The log-branch push step gates on it.
+          GL_VER=8.30.1
+          GL_SHA=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz"
+          echo "${GL_SHA}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C "$HOME/.local/bin" gitleaks
+          "$HOME/.local/bin/gitleaks" version
 
       - name: Run strict-review workflow
         id: review
@@ -176,6 +186,19 @@ jobs:
           git checkout -q --orphan out
           mkdir -p run
           cp /tmp/run/* run/ 2>/dev/null || true
+          # gitleaks gate: the run output (full PR diff + session transcript) is about to be
+          # pushed to a branch on the consumer repo. Scan it first and FAIL-CLOSED — skip the
+          # push if the scanner is missing or finds a secret. The mktemp git-init above bypasses
+          # the repo's own pre-commit hook, so this is the only secret scan on this artifact.
+          # (gitleaks v8 has no -q; --redact keeps any hit out of the CI log.)
+          if ! command -v gitleaks >/dev/null 2>&1; then
+            echo "::error::gitleaks unavailable — skipping log-branch push for PR #${PR_NUMBER} (fail-closed)"
+            exit 0
+          fi
+          if ! gitleaks detect --source run --no-git --redact --no-banner; then
+            echo "::error::gitleaks flagged a potential secret in the run output — skipping log-branch push for PR #${PR_NUMBER}"
+            exit 0
+          fi
           printf '# cc-review run log — %s\n\nrun: https://github.com/%s/actions/runs/%s\n' "$LOG_BRANCH" "${{ github.repository }}" "$RUN_ID" > README.md
           git add -A
           git commit -q -m "cc-review run for ${LOG_BRANCH} ($(date -u +%FT%TZ))" || true
