@@ -111,7 +111,9 @@ jobs:
           BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json); HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
           if ! gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt 2>/dev/null; then
             git fetch origin "$HEAD" 2>/dev/null || true
-            git diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
+            # core.quotepath=false: emit raw UTF-8 paths (not C-escaped "a/caf\303\251") so the
+            # parser and inline-comment posting see the same paths the gh API path produces.
+            git -c core.quotepath=false diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
           fi
           # Put the PR head on disk so file-reading agents (comment-mgmt) judge the PR's code,
           # not the trigger ref. On a real pull_request event the checkout is already the head;

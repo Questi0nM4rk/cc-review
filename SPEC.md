@@ -131,7 +131,10 @@ review. Accepted.)
   deserialization sink, a migration/schema change, or a sizable diff each raise a minimum (≥3 for
   risk, up to 4 for large diffs). It only ever **raises** depth, so a risky-but-small change can't
   roll a thin review; the rating + floor + reasons are logged for audit. (Thresholds are tunable.)
-- **Model-by-category:** `LOW_STAKES_CATEGORY` (docs/chore) runs the opus slots on **sonnet**.
+- **Model-by-category:** `LOW_STAKES_CATEGORY` (docs/chore) runs the opus slots on **sonnet** —
+  **unless** `difficultyFloor` flagged a risk signal (security path / injection sink / SQL building /
+  migration), which vetoes the downgrade so a "chore" touching dangerous code is still reviewed on
+  opus (#12: floor-vs-category interaction).
 - The **2 opus slots** go to the top-2 domains by deterministic relevance (`pickSquad`, §8).
 
 ---

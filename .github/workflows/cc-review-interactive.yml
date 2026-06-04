@@ -94,7 +94,9 @@ jobs:
           if ! gh pr diff "$PR" > /tmp/pr-diff.txt 2>/dev/null; then
             BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json); HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
             git fetch origin "$HEAD" 2>/dev/null || true
-            git diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
+            # core.quotepath=false: emit raw UTF-8 paths (not C-escaped) so the parser and
+            # inline-comment posting see the same paths the gh API path produces.
+            git -c core.quotepath=false diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
           fi
           if git -C /tmp/cc-review-bot fetch origin claude-reviewer/memory 2>/dev/null; then
             git -C /tmp/cc-review-bot archive FETCH_HEAD "${REPO}/" 2>/dev/null | tar -x -C .cc-memory --strip-components=2 2>/dev/null || true

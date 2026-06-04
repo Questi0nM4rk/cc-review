@@ -367,6 +367,13 @@ test("difficultyFloor: reasons are reported for auditability", () => {
   assert.ok(Array.isArray(r.reasons) && r.reasons.length > 0);
 });
 
+test("difficultyFloor: risk flag set for risk signals, NOT for size-only (vetoes the docs->sonnet downgrade, #12)", () => {
+  assert.equal(H.difficultyFloor(["src/auth/login.ts"], tinyDiff(3)).risk, true);   // security path
+  assert.equal(H.difficultyFloor(["db/0007.sql"], tinyDiff(2)).risk, true);          // migration
+  assert.equal(H.difficultyFloor(["a", "b", "c", "d"], tinyDiff(5)).risk, false);    // size-only -> not a risk veto
+  assert.equal(H.difficultyFloor(["README.md"], tinyDiff(1)).risk, false);           // trivial
+});
+
 // ---------------------------------------------------------------------------
 // fixMermaid
 // ---------------------------------------------------------------------------
@@ -406,4 +413,59 @@ test("sigChangePrefilter: tiny change well under thresholds => not significant",
 test("sigChangePrefilter: borderline line count => defers to the agent", () => {
   const r = H.sigChangePrefilter(plusLines(130), new Array(10).fill("f"), { reviewed_file_count: 10 });
   assert.deepEqual({ decided: r.decided, borderline: r.borderline }, { decided: false, borderline: true });
+});
+
+// ---------------------------------------------------------------------------
+// Edge-case diff shapes (#12) — rename / delete / binary / non-ASCII / multi-lang.
+// Characterizes the deterministic parsers against real git-diff output so these
+// don't silently mis-route or crash. Paths are RAW UTF-8: the gh API diff is
+// unquoted, and the git-fallback runs with core.quotepath=false (set in the GHA)
+// so it does NOT C-escape non-ASCII (e.g. "a/caf\303\251") — both paths agree.
+// ---------------------------------------------------------------------------
+const DIFFS = {
+  rename: "diff --git a/src/old.ts b/src/new.ts\nsimilarity index 100%\nrename from src/old.ts\nrename to src/new.ts\n",
+  renameEdited: "diff --git a/src/old.ts b/src/new.ts\nsimilarity index 90%\nrename from src/old.ts\nrename to src/new.ts\nindex 111..222 100644\n--- a/src/old.ts\n+++ b/src/new.ts\n@@ -1 +1 @@\n-const a = 1;\n+const a = 2;\n",
+  del: "diff --git a/src/gone.ts b/src/gone.ts\ndeleted file mode 100644\nindex abc..000\n--- a/src/gone.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-const a = 1;\n-const b = 2;\n",
+  binary: "diff --git a/assets/logo.png b/assets/logo.png\nnew file mode 100644\nindex 000..abc\nBinary files /dev/null and b/assets/logo.png differ\n",
+  nonAscii: "diff --git a/src/café/münchen.ts b/src/café/münchen.ts\nindex 111..222 100644\n--- a/src/café/münchen.ts\n+++ b/src/café/münchen.ts\n@@ -1 +1 @@\n-const x = 1;\n+const x = 2;\n",
+  multiLang: "diff --git a/api/handler.py b/api/handler.py\nindex 1..2 100644\n--- a/api/handler.py\n+++ b/api/handler.py\n@@ -1 +1 @@\n+def f(): return 1\ndiff --git a/web/app.ts b/web/app.ts\nindex 1..2 100644\n--- a/web/app.ts\n+++ b/web/app.ts\n@@ -1 +1 @@\n+const x = 1;\ndiff --git a/Program.cs b/Program.cs\nindex 1..2 100644\n--- a/Program.cs\n+++ b/Program.cs\n@@ -1 +1 @@\n+class P {}\n",
+};
+
+test("changedFiles: rename (no content) captures the NEW path only", () => {
+  assert.deepEqual(H.changedFiles(DIFFS.rename), ["src/new.ts"]);
+});
+
+test("changedFiles: rename WITH edits captures the new path once (deduped)", () => {
+  assert.deepEqual(H.changedFiles(DIFFS.renameEdited), ["src/new.ts"]);
+});
+
+test("changedFiles: a deletion is captured (from the diff --git line, not +++ /dev/null)", () => {
+  assert.deepEqual(H.changedFiles(DIFFS.del), ["src/gone.ts"]);
+});
+
+test("changedFiles: a binary file is captured and routes to no language", () => {
+  assert.deepEqual(H.changedFiles(DIFFS.binary), ["assets/logo.png"]);
+  assert.deepEqual(H.langsForDiff(H.changedFiles(DIFFS.binary)), []);
+});
+
+test("changedFiles: non-ASCII paths are preserved intact", () => {
+  assert.deepEqual(H.changedFiles(DIFFS.nonAscii), ["src/café/münchen.ts"]);
+  assert.deepEqual(H.langsForDiff(H.changedFiles(DIFFS.nonAscii)), ["typescript"]);
+});
+
+test("changedFiles + langsForDiff: a multi-language diff routes every language", () => {
+  assert.deepEqual(H.changedFiles(DIFFS.multiLang).sort(), ["Program.cs", "api/handler.py", "web/app.ts"]);
+  assert.deepEqual(H.langsForDiff(H.changedFiles(DIFFS.multiLang)).sort(), ["dotnet", "python", "typescript"]);
+});
+
+test("addedLineCount: +++ /dev/null and the +++ b/ header are NOT counted; only real + lines", () => {
+  assert.equal(H.addedLineCount(DIFFS.del), 0);          // deletion: only - lines
+  assert.equal(H.addedLineCount(DIFFS.binary), 0);       // binary: no content
+  assert.equal(H.addedLineCount(DIFFS.renameEdited), 1); // one +const line
+  assert.equal(H.addedLineCount(DIFFS.multiLang), 3);    // one + per file
+});
+
+test("applyIgnorePaths filters edge-case paths by glob (binary asset ignored)", () => {
+  const files = H.changedFiles(DIFFS.binary).concat(H.changedFiles(DIFFS.multiLang));
+  assert.deepEqual(H.applyIgnorePaths(files, ["assets/**"]).sort(), ["Program.cs", "api/handler.py", "web/app.ts"]);
 });

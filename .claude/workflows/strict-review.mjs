@@ -442,23 +442,25 @@ function difficultyPath(d) { return PATH[Math.min(5, Math.max(1, d || 3))]; }
 function difficultyFloor(files, diff) {
   const reasons = [];
   let floor = 1;
-  const raise = (to, why) => { if (to > floor) floor = to; reasons.push(why); };
+  let risk = false; // a non-size RISK signal fired (security/sink/SQL/migration) — vetoes the
+                    // docs/chore opus->sonnet downgrade so dangerous code isn't reviewed weakly.
+  const raise = (to, why, isRisk = false) => { if (to > floor) floor = to; reasons.push(why); if (isRisk) risk = true; };
   const names = files.join("\n");
   const added = addedLineCount(diff);
 
   // Security-sensitive surface — auth/crypto/secrets in a path, or an injection/exec sink in the diff.
-  if (/(auth|login|logout|token|crypto|password|secret|credential|jwt|oauth|session|cookie|sanitiz|escap|permission|authoriz)/i.test(names)) raise(3, "security-sensitive path");
-  if (/\b(exec|eval|system|popen|subprocess|child_process|deserialize|pickle|yaml\.load|innerHTML|dangerouslySetInnerHTML|Runtime\.getRuntime)\b/i.test(diff)) raise(3, "execution/deserialization sink in diff");
-  if (/(SELECT|INSERT|UPDATE|DELETE|MERGE)\b[^\n]*(\$\{|\bformat\b|\+|\bf"|`)/i.test(diff)) raise(3, "possible SQL string-building in diff");
+  if (/(auth|login|logout|token|crypto|password|secret|credential|jwt|oauth|session|cookie|sanitiz|escap|permission|authoriz)/i.test(names)) raise(3, "security-sensitive path", true);
+  if (/\b(exec|eval|system|popen|subprocess|child_process|deserialize|pickle|yaml\.load|innerHTML|dangerouslySetInnerHTML|Runtime\.getRuntime)\b/i.test(diff)) raise(3, "execution/deserialization sink in diff", true);
+  if (/(SELECT|INSERT|UPDATE|DELETE|MERGE)\b[^\n]*(\$\{|\bformat\b|\+|\bf"|`)/i.test(diff)) raise(3, "possible SQL string-building in diff", true);
   // Schema/migration changes ride along with data-shape risk.
-  if (/(migration|\bschema\b|\.sql$)/im.test(names) || /\b(ALTER|CREATE|DROP)\s+TABLE\b/i.test(diff)) raise(3, "migration/schema change");
+  if (/(migration|\bschema\b|\.sql$)/im.test(names) || /\b(ALTER|CREATE|DROP)\s+TABLE\b/i.test(diff)) raise(3, "migration/schema change", true);
 
-  // Size floor — a large change is at least a normal feature's worth of review depth.
+  // Size floor — a large change is at least a normal feature's worth of review depth (not a risk veto).
   if (files.length >= 10 || added >= 400) raise(4, `large diff (${files.length} files, +${added})`);
   else if (files.length >= 4 || added >= 120) raise(3, `sizable diff (${files.length} files, +${added})`);
   else if (added >= 30) raise(2, `non-trivial diff (+${added})`);
 
-  return { floor, reasons };
+  return { floor, reasons, risk };
 }
 
 // Defensive: holistic agents sometimes HTML-escape the mermaid (--&gt; instead of -->),
@@ -545,7 +547,7 @@ if (userMessage.trim()) {
 }
 
 // Shared deep-review pipeline (gather -> squad -> dedup -> check). Returns { kept, falsePositives, observations }.
-async function runDeepReview(difficulty, category, overviewBrief, doGather) {
+async function runDeepReview(difficulty, category, overviewBrief, doGather, highStakes) {
   const path = difficultyPath(difficulty);
   let observations = [];
   let toolFindings = [];
@@ -570,7 +572,9 @@ async function runDeepReview(difficulty, category, overviewBrief, doGather) {
 
   const projectContext = buildProjectContext(config, memNotes, memKnown);
   const squad = pickSquad(observations, files, category, path.opusCount, path.sonnetCount);
-  const opusModel = LOW_STAKES_CATEGORY.has(category) ? "sonnet" : "opus";
+  // docs/chore normally run the deep slots on sonnet — UNLESS a risk signal fired (security/
+  // sink/SQL/migration): a "chore" that touches dangerous code must not be reviewed weakly (#12).
+  const opusModel = (LOW_STAKES_CATEGORY.has(category) && !highStakes) ? "sonnet" : "opus";
   log(`squad: ${opusModel}=[${squad.opus.join(",")}] sonnet=[${squad.sonnet.join(",")}]`);
   phase("Squad");
   const partition = (d) => observations.filter((o) => normalizeDomain(o.suggested_domain) === d);
@@ -617,7 +621,7 @@ if (!isRerun) {
 
   if (post) await agent(overviewWritePrompt(prNumber, overviewMd, null), { model: "sonnet", label: "post-overview", phase: "Holistic" });
 
-  const res = await runDeepReview(difficulty, category, sanitizeContext(overviewMd, 700), difficultyPath(difficulty).gather);
+  const res = await runDeepReview(difficulty, category, sanitizeContext(overviewMd, 700), difficultyPath(difficulty).gather, fl.risk);
   kept = res.kept; falsePositives = res.falsePositives; memKnown = res.memKnown;
   reviewed = true;
 } else {
@@ -668,7 +672,7 @@ if (!isRerun) {
   if (significant && post) await agent(overviewWritePrompt(prNumber, overviewMd, overviewId), { model: "sonnet", label: "edit-overview", phase: "Holistic" });
 
   // A review ALWAYS runs on a re-run (the "simple review"); fresh web research only when significant.
-  const res = await runDeepReview(difficulty, category, sanitizeContext(overviewMd, 700), significant);
+  const res = await runDeepReview(difficulty, category, sanitizeContext(overviewMd, 700), significant, fl.risk);
   kept = res.kept; falsePositives = res.falsePositives; memKnown = res.memKnown;
   reviewed = true;
 }
