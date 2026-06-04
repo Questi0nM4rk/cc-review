@@ -24,7 +24,7 @@ const EXPORTS = [
   "changedFiles", "addedLineCount", "sanitizeContext", "dropAlreadyThreaded", "selectReplies",
   "langsForDiff", "globToRe", "applyIgnorePaths", "mergeLangs", "buildProjectContext",
   "normalizeDomain", "relevanceScores", "pickSquad", "dedup", "stampHash",
-  "buildPayload", "difficultyPath", "fixMermaid", "sigChangePrefilter",
+  "buildPayload", "difficultyPath", "difficultyFloor", "fixMermaid", "sigChangePrefilter",
 ];
 
 const raw = readFileSync(BRAIN, "utf8");
@@ -327,6 +327,44 @@ test("difficultyPath clamps to 1..5; falsy (0/undefined) defaults to 3", () => {
   // Difficulty is always 1..5 in practice, so 0 means "unknown" -> default depth.
   assert.equal(H.difficultyPath(0).opusCount, 2);
   assert.equal(H.difficultyPath(undefined).opusCount, 2);
+});
+
+// ---------------------------------------------------------------------------
+// difficultyFloor  (#14 — risky-but-small diffs must not roll a thin review)
+// ---------------------------------------------------------------------------
+const tinyDiff = (n = 3) => "+++ b/f\n" + "+x\n".repeat(n);
+
+test("difficultyFloor: a tiny auth-file change floors at >=3", () => {
+  assert.ok(H.difficultyFloor(["src/auth/login.ts"], tinyDiff(3)).floor >= 3);
+});
+
+test("difficultyFloor: a migration floors at >=3", () => {
+  assert.ok(H.difficultyFloor(["db/migrations/0007_add_col.sql"], tinyDiff(2)).floor >= 3);
+});
+
+test("difficultyFloor: SQL string-building in the diff floors at >=3", () => {
+  const diff = '+++ b/repo.ts\n+const q = `SELECT * FROM users WHERE id = ${userId}`;\n';
+  assert.ok(H.difficultyFloor(["repo.ts"], diff).floor >= 3);
+});
+
+test("difficultyFloor: an exec/deserialization sink floors at >=3", () => {
+  const diff = "+++ b/run.py\n+import subprocess\n+subprocess.run(cmd, shell=True)\n";
+  assert.ok(H.difficultyFloor(["run.py"], diff).floor >= 3);
+});
+
+test("difficultyFloor: a trivial small non-risky diff stays at floor 1", () => {
+  assert.equal(H.difficultyFloor(["README.md"], "+++ b/README.md\n+typo fix\n").floor, 1);
+});
+
+test("difficultyFloor: size escalates the floor (2 -> 3 -> 4)", () => {
+  assert.equal(H.difficultyFloor(["a.ts"], tinyDiff(40)).floor, 2);   // +40 lines
+  assert.equal(H.difficultyFloor(["a", "b", "c", "d"], tinyDiff(5)).floor, 3); // 4 files
+  assert.equal(H.difficultyFloor(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"], tinyDiff(5)).floor, 4); // 10 files
+});
+
+test("difficultyFloor: reasons are reported for auditability", () => {
+  const r = H.difficultyFloor(["src/auth/token.ts"], tinyDiff(3));
+  assert.ok(Array.isArray(r.reasons) && r.reasons.length > 0);
 });
 
 // ---------------------------------------------------------------------------

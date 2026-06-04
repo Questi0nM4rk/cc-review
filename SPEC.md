@@ -125,6 +125,12 @@ review. Accepted.)
 
 - The opus anchors always run at **xhigh** effort. Depth scales by **adding reviewers**, never
   by weakening the anchor.
+- **Deterministic floor:** the holistic agent's difficulty is one stochastic integer, so it is
+  floored by a deterministic JS function (`difficultyFloor`): `difficulty = max(rated, floor)`.
+  The floor reads the diff's risk + size signals — a security-sensitive path, an injection/exec/
+  deserialization sink, a migration/schema change, or a sizable diff each raise a minimum (≥3 for
+  risk, up to 4 for large diffs). It only ever **raises** depth, so a risky-but-small change can't
+  roll a thin review; the rating + floor + reasons are logged for audit. (Thresholds are tunable.)
 - **Model-by-category:** `LOW_STAKES_CATEGORY` (docs/chore) runs the opus slots on **sonnet**.
 - The **2 opus slots** go to the top-2 domains by deterministic relevance (`pickSquad`, §8).
 

@@ -434,6 +434,33 @@ function buildPayload(kept, event) {
 
 function difficultyPath(d) { return PATH[Math.min(5, Math.max(1, d || 3))]; }
 
+// Deterministic MINIMUM difficulty from the diff's risk + size signals. Applied as a FLOOR
+// under the stochastic holistic rating (difficulty = max(rated, floor)) so a risky-but-small
+// change can't roll a thin review (#14: the same fixture rated 1 then 3 across runs). It only
+// ever RAISES depth, so a loose match over-reviews (safe) rather than under-reviews. Returns
+// { floor, reasons } — reasons feed the log so the rating is auditable. Thresholds are tunable.
+function difficultyFloor(files, diff) {
+  const reasons = [];
+  let floor = 1;
+  const raise = (to, why) => { if (to > floor) floor = to; reasons.push(why); };
+  const names = files.join("\n");
+  const added = addedLineCount(diff);
+
+  // Security-sensitive surface — auth/crypto/secrets in a path, or an injection/exec sink in the diff.
+  if (/(auth|login|logout|token|crypto|password|secret|credential|jwt|oauth|session|cookie|sanitiz|escap|permission|authoriz)/i.test(names)) raise(3, "security-sensitive path");
+  if (/\b(exec|eval|system|popen|subprocess|child_process|deserialize|pickle|yaml\.load|innerHTML|dangerouslySetInnerHTML|Runtime\.getRuntime)\b/i.test(diff)) raise(3, "execution/deserialization sink in diff");
+  if (/(SELECT|INSERT|UPDATE|DELETE|MERGE)\b[^\n]*(\$\{|\bformat\b|\+|\bf"|`)/i.test(diff)) raise(3, "possible SQL string-building in diff");
+  // Schema/migration changes ride along with data-shape risk.
+  if (/(migration|\bschema\b|\.sql$)/im.test(names) || /\b(ALTER|CREATE|DROP)\s+TABLE\b/i.test(diff)) raise(3, "migration/schema change");
+
+  // Size floor — a large change is at least a normal feature's worth of review depth.
+  if (files.length >= 10 || added >= 400) raise(4, `large diff (${files.length} files, +${added})`);
+  else if (files.length >= 4 || added >= 120) raise(3, `sizable diff (${files.length} files, +${added})`);
+  else if (added >= 30) raise(2, `non-trivial diff (+${added})`);
+
+  return { floor, reasons };
+}
+
 // Defensive: holistic agents sometimes HTML-escape the mermaid (--&gt; instead of -->),
 // which breaks GitHub rendering. Un-escape entities INSIDE the ```mermaid fence only.
 function fixMermaid(md) {
@@ -581,10 +608,12 @@ if (!isRerun) {
   // ---- FIRST REVIEW -------------------------------------------------------
   phase("Holistic");
   const holistic = await agent(holisticPrompt(diff, priorThreads.length), { schema: HOLISTIC_SCHEMA, model: "opus", effort: "medium", label: "holistic", phase: "Holistic" });
-  difficulty = holistic?.difficulty || 3;
+  const rated = holistic?.difficulty || 3;
+  const fl = difficultyFloor(files, diff);
+  difficulty = Math.max(rated, fl.floor); // deterministic floor under the stochastic rating (#14)
   category = holistic?.category || "other";
   overviewMd = fixMermaid(holistic?.overview_markdown || "");
-  log(`category=${category}, difficulty=${difficulty}/5`);
+  log(`category=${category}, difficulty=${difficulty}/5 (rated ${rated}, floor ${fl.floor}${fl.reasons.length ? `: ${fl.reasons.join("; ")}` : ""})`);
 
   if (post) await agent(overviewWritePrompt(prNumber, overviewMd, null), { model: "sonnet", label: "post-overview", phase: "Holistic" });
 
@@ -614,9 +643,12 @@ if (!isRerun) {
   // only EDITED IN PLACE when the change is significant; minor re-runs leave it untouched.
   phase("Holistic");
   const holistic = await agent(holisticPrompt(diff, priorThreads.length), { schema: HOLISTIC_SCHEMA, model: "opus", effort: "medium", label: "holistic-rerun", phase: "Holistic" });
-  difficulty = holistic?.difficulty || 3;
+  const rated = holistic?.difficulty || 3;
+  const fl = difficultyFloor(files, diff);
+  difficulty = Math.max(rated, fl.floor); // deterministic floor under the stochastic rating (#14)
   category = holistic?.category || "other";
   overviewMd = fixMermaid(holistic?.overview_markdown || "");
+  log(`re-run difficulty=${difficulty}/5 (rated ${rated}, floor ${fl.floor}${fl.reasons.length ? `: ${fl.reasons.join("; ")}` : ""})`);
 
   // Significant-change check — JS prefilter, agent confirms borderline (SPEC §9).
   phase("Significant change");
