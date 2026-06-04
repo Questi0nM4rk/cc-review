@@ -34,7 +34,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 ## Deployment & testing
 
 - **Don't push the rewrite to cc-review `main` directly.** Push a branch (`rewrite`), point a consumer's installed `cc-review.yml` clone at it (`git clone -b rewrite …`), validate, then PR `rewrite → main`. This breaks the chicken-and-egg (the consumer GHA clones cc-review at runtime, so the brain must be on a branch it can reach).
-- **Test rig:** install the workflows on the consumer's default branch, then `gh workflow run cc-review.yml -f pr_number=<closed PR>`. Verify via (a) the posted review on the PR and (b) the run's return value on the `<branch>-cc-review-output` log branch.
+- **Test rig:** install the workflows on the consumer's default branch, then `gh workflow run cc-review.yml -f pr_number=<closed PR>`. Verify via (a) the posted review on the PR and (b) the run's return value on the `pr-<N>-cc-review-output` log branch.
 - **`workflow_dispatch` checks out the default branch, not the PR head** — so the workflow's "read the file on disk" sees `main`, not the PR. The *review* still uses the gh-fetched diff (correct content). Real `pull_request` events check out the PR head, so this only skews dispatch-triggered tests.
 
 ## What works (don't second-guess these)

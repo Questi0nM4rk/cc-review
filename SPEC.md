@@ -255,8 +255,10 @@ removed file is always significant regardless. The prefilter behavior is pinned 
 
 Repository permissions: **Contents** R/W (memory + log branches), **Pull requests** R/W
 (diff/threads, reviews, resolve), **Issues** R/W (overview + status comments), **Metadata** R.
-Subscribe to: Pull request, Issue comment, Pull request review comment. Install on **two** repos:
-the consumer, and `Questi0nM4rk/cc-review` (so CI can clone the brain). Consumer secrets:
+**No webhook events / subscriptions are needed** — the bot is driven by the consumer's own GitHub
+Actions (`pull_request`, `issue_comment`, `pull_request_review_comment`), and the App is used only
+for its token + permissions (its webhook is inactive). Install on **two** repos: the consumer, and
+`Questi0nM4rk/cc-review` (so CI can clone the brain). Consumer secrets:
 `CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_ID`, `REVIEWER_APP_PRIVATE_KEY`.
 
 ---
@@ -270,13 +272,15 @@ cc-review/
 ├── .cc-review.yaml                  ← config template (copied to consumers)
 ├── .github/workflows/{cc-review,cc-review-interactive,cc-review-cleanup}.yml
 ├── .claude/workflows/strict-review.mjs   ← the entire review brain
-├── scripts/{review-platform,analysis-tools}.ts
+├── scripts/{review-platform,analysis-tools,setup}.ts, {setup,install-to-repo}.sh
+├── scripts/{check-brain,helpers.test,verify-gate.test}.mjs   ← CI: brain syntax gate + helper tests
+├── .github/workflows/ci.yml             ← runs the syntax gate + node --test on push/PR
 ├── docs/{overview-diagram-standard.md, pipeline-diagram.html, lessons-learned.md, github-review-api.md}
 └── lang-refs/{dotnet,typescript,python,shell}.md
 ```
 
-Consumers get three workflow files + one config; CI clones this repo (branch `rewrite`) at
-runtime for the brain.
+Consumers get three workflow files + one config; CI clones this repo's **default branch `main`** at
+runtime for the brain (§13).
 
 ---
 
@@ -302,10 +306,19 @@ off `FETCH_HEAD`.
 
 ---
 
-## 15. OPEN — confirm or red-line
+## 15. Settled defaults (rationale)
 
-- [ ] **Check agent model** — defaulted to **opus·high** (it is now the sole quality gate). Drop to sonnet to cut cost?
-- [ ] **Gather difficulty gate** — defaulted to **difficulty ≥ 2** (trivial PRs skip web research). Always run instead?
-- [ ] **Significant-change thresholds** (§9) — the 25% / 150-line / new-file numbers are guesses.
-- [ ] **`answer` mode** — strictly a reply (no overview), as specced. Confirm.
-- [ ] **Memory-save contents** — first review records found-issues + lessons + decisions; re-run adds known-patterns + resolutions. Confirm the split.
+The rebuild's open calls, now settled:
+
+- **Check-agent model — `opus·high`.** It is the *sole* quality gate (the one false-positive filter
+  that replaced the old grade + verify passes), so it stays on the strongest tier; cost is one call,
+  gated to difficulty ≥ 2. Not dropped to sonnet.
+- **Gather difficulty gate — difficulty ≥ 2.** Trivial PRs (d1) skip web research; the deterministic
+  difficulty floor (§5) guarantees a risky-but-small change lands ≥ 3 and *does* get gather. Not always-on.
+- **Significant-change thresholds (§9) — documented + per-project configurable** (`.cc-review.yaml`
+  `significant_change`). No longer bare guesses (resolved in #17).
+- **`answer` mode — reply-only.** A question gets a single reply comment and the run stops — no overview,
+  no squad. Confirmed.
+- **Memory-save split — confirmed.** A first review records found-issues + lessons + decisions; a re-run
+  additionally records known-patterns + resolutions. The memory agent runs only when there is something
+  to record.

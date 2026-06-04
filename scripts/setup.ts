@@ -337,6 +337,7 @@ async function main(): Promise<void> {
     const filesToCopy: [string, string][] = [
       [".github/workflows/cc-review.yml", ".github/workflows/cc-review.yml"],
       [".github/workflows/cc-review-interactive.yml", ".github/workflows/cc-review-interactive.yml"],
+      [".github/workflows/cc-review-cleanup.yml", ".github/workflows/cc-review-cleanup.yml"],
       [".cc-review.yaml", ".cc-review.yaml"],
     ];
 

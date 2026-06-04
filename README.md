@@ -41,6 +41,26 @@ PR event / @cc-review ping
   One review (APPROVE / REQUEST_CHANGES) · threads resolved · memory + log branches updated
 ```
 
+## What a review looks like
+
+**1 — the overview comment** (posted first, edited in place on significant re-runs):
+
+> <sub>`<!-- cc-review:overview -->`</sub>
+> **Difficulty: 3/5** — Adds a `/orders` endpoint that creates an order in Draft and submits it through the outbox dispatch chain.
+> ```mermaid
+> flowchart LR
+>   A["POST /orders"] -->|"create"| B["OrderService"]
+>   B -->|"enqueue"| C{"outbox dispatched?"}
+>   C -->|"yes"| D["pricing-calculator"]
+> ```
+> Riskiest area: the synthetic `HttpContext` restoration in the outbox handler.
+
+**2 — inline findings** (every finding is a required change — no severity labels, no "nits"):
+
+> **`src/OrdersController.cs:42`** — Validate `request.CustomerId > 0` before the lookup; an unset id currently reaches the repository and returns the first row.
+
+**3 — the verdict** — `REQUEST_CHANGES` until every thread is resolved and there are zero findings; otherwise `APPROVE`. On a re-run it replies `Fixed: …` / `Dismissed: …` on each prior thread first.
+
 ## How review depth scales (token-efficient + pedantic)
 
 The holistic-review difficulty rating (1–5) deterministically picks the path:
@@ -86,7 +106,7 @@ The only intent the message selects is **answer-only** (a question → a reply, 
 
 ## Setup
 
-1. **Create the GitHub App** (`./scripts/setup.sh`) with permissions: Contents R/W, Pull requests R/W, Issues R/W, Metadata R; events: PR, Issue comment, PR review comment.
+1. **Create the GitHub App** (`./scripts/setup.sh`) with permissions: Contents R/W, Pull requests R/W, Issues R/W, Metadata R. No webhook events are needed — the bot runs from your repo's own GitHub Actions (`pull_request` / `issue_comment`); the App only provides the review identity + token.
 2. **Install the App on two repos**: your target repo, and `Questi0nM4rk/cc-review` (so CI can clone the brain). *(No marketplace install — the bot is self-contained.)*
 3. **Add secrets** to the target repo: `CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_ID`, `REVIEWER_APP_PRIVATE_KEY`.
 4. **Copy the workflow files + config** into the target repo:
@@ -99,9 +119,8 @@ The only intent the message selects is **answer-only** (a question → a reply, 
 
 | Branch | Where | Contents |
 |---|---|---|
-| `claude-reviewer/memory` | bot repo | per-project learnings: `MEMORY.md` + `learnings/{lessons,found-issues,known-patterns,decisions}.md`; **and the per-PR research cache `<owner>/<repo>/pr-<N>/research/` (gather output, reused across re-runs)** |
-| `<source-branch>-cc-review-output` | your repo | **ephemeral** per-PR run log (diff, session, result); auto-deleted when the PR closes |
-| `claude-reviewer/transcripts` | your repo | per-PR last-run `session.jsonl` |
+| `claude-reviewer/memory` | bot repo | per-project learnings: `MEMORY.md` + `learnings/{lessons,found-issues,known-patterns,decisions}.md`; and a tiny per-PR `<owner>/<repo>/pr-<N>/review-state.json` marker (head sha + file count) the significant-change check diffs against |
+| `pr-<N>-cc-review-output` | your repo | **ephemeral** per-PR run log (diff, session, result); gitleaks-scanned before push; auto-deleted when the PR closes |
 
 ## GitLab / local mode
 
@@ -114,7 +133,7 @@ Where a CI bot app isn't allowed (e.g. corporate GitLab), run it **locally** aga
 | Not reviewing | `trigger:` value; the 3 secrets; App installed on target **and** `cc-review` |
 | Can't approve | Unresolved threads remain — the gate refuses to approve until every thread is resolved |
 | Too noisy / missed something | Add to `known_patterns` / `instructions` in `.cc-review.yaml` |
-| Why did it flag X? | The `<branch>-cc-review-output` log branch (while the PR is open) or the transcripts branch |
+| Why did it flag X? | The `pr-<N>-cc-review-output` log branch (while the PR is open) — it holds the diff, session, and result for that run |
 
 ---
 

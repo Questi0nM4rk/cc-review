@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Quick install — copies only workflows + config to a target repo.
 # Bot intelligence (.claude/) is fetched at CI runtime from github.com/Questi0nM4rk/cc-review.
-# Assumes secrets are already configured. For full setup, use setup.sh instead.
+# Assumes secrets are already configured. For full setup, use scripts/setup.sh instead.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_DIR="$(dirname "$SCRIPT_DIR")"
@@ -13,7 +13,7 @@ if [[ $# -lt 1 ]]; then
     echo ""
     echo "Copies workflow files and .cc-review.yaml to the target repo."
     echo "Bot prompts are fetched at CI runtime — nothing else needed in the repo."
-    echo "You still need to configure secrets — run setup.sh for full setup."
+    echo "You still need to configure secrets — run scripts/setup.sh for full setup."
     exit 1
 fi
 

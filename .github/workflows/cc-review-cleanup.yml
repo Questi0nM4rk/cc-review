@@ -1,6 +1,6 @@
 # ============================================================================
 #  cc-review cleanup — deletes the ephemeral debug log branch on PR close.
-#  Pairs with cc-review.yml, which creates <source-branch>-cc-review-output
+#  Pairs with cc-review.yml, which creates pr-<N>-cc-review-output
 #  while the PR is open. Once the PR is closed or merged, that branch is junk —
 #  this removes it so consumer repos do not accumulate -cc-review-output refs.
 # ============================================================================
