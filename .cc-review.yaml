@@ -1,38 +1,32 @@
-# cc-review bot configuration
-# Place this file in your repository root to customize review behavior.
-# All fields are optional — defaults are shown below.
+# cc-review — per-project configuration
+# Place this file at your repository root. All fields are optional; defaults shown.
 
 version: 1
 
-# Automatically review when PRs are opened. Set to false to require the
-# `cc-review` label or workflow_dispatch to trigger a review.
-auto_review: true
+# WHEN auto-review runs. The @cc-review ping ALWAYS works regardless of this setting.
+#   every_push : review when the PR opens AND on every push to the PR branch
+#   pr_open    : review only when the PR is opened or reopened           (default)
+#   disabled   : never auto-review — only an @cc-review comment triggers a run
+trigger: pr_open
 
-# Primary languages in this project. Strict-review's research phase uses
-# this to load language-specific pattern references.
+# Primary languages in this repo. Loads the matching strict checklists
+# (dotnet / typescript / python / shell) for the reviewers to check against.
 languages: []
-#  - python
 #  - csharp
 #  - typescript
 
-# Paths to skip during review (glob patterns).
+# Glob paths the review should skip.
 ignore_paths: []
 #  - "docs/**"
-#  - "*.md"
-#  - "**/*.test.*"
+#  - "**/*.md"
 #  - "**/__snapshots__/**"
-#  - "vendor/**"
 
-# Custom review instructions (appended to the review prompt).
-# Use this for project-specific conventions the reviewer should know.
+# Project-specific conventions appended to the reviewer context.
 instructions: ""
 #  instructions: |
-#    This is a Python FastAPI project using SQLAlchemy.
-#    Pay special attention to async/await patterns.
-#    All database operations must use transactions.
+#    FastAPI + SQLAlchemy. All DB work goes through repositories.
+#    Wolverine handles durable messaging — do not flag the queue indirection.
 
-# Known patterns to skip (prevents false positives).
-# Add patterns the reviewer keeps flagging that are intentional in your project.
+# Intentional patterns the reviewer must NOT flag (prevents recurring false positives).
 known_patterns: []
-#  - "We intentionally use broad exception handlers in middleware"
-#  - "Task.Run is used for CPU-bound work in this project"
+#  - "Broad exception handlers in middleware are intentional."
