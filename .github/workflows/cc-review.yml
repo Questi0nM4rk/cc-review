@@ -108,11 +108,16 @@ jobs:
         run: |
           # Diff (with a local-git fallback for diffs too large for the API).
           gh pr view "$PR_NUMBER" --json title,body,author,baseRefName,headRefName,files > /tmp/pr-meta.json
+          BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json); HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
           if ! gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt 2>/dev/null; then
-            BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json); HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
             git fetch origin "$HEAD" 2>/dev/null || true
             git diff "origin/$BASE...origin/$HEAD" > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
           fi
+          # Put the PR head on disk so file-reading agents (comment-mgmt) judge the PR's code,
+          # not the trigger ref. On a real pull_request event the checkout is already the head;
+          # on workflow_dispatch it is the dispatch ref, so fetch + check out the head here.
+          # Untracked .cc-run/.cc-memory survive a tracked-file checkout.
+          git fetch origin "$HEAD" 2>/dev/null && git checkout -q -f FETCH_HEAD 2>/dev/null || echo "PR-head checkout skipped (event already on head)"
           # Stage this repo's memory slice INTO THE WORKSPACE (.cc-memory) — the brain writes
           # there because the sandbox blocks /tmp writes. The slice ${REPO}/ also carries the
           # per-PR research cache at ${REPO}/pr-<N>/research, so one archive restores both.
