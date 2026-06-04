@@ -49,6 +49,7 @@ Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-re
 
 - Branch `claude-reviewer/memory` **in this repo**, per-consumer slices `<owner>/<repo>/` → `MEMORY.md` + `learnings/{found-issues,lessons,known-patterns,decisions}.md`.
 - The memory agent receives the **actual confirmed findings** (not just counts) so `found-issues` records real issues; it only runs when there's something to record.
+- It **curates** rather than appends blindly: it reads each file first and either appends a new entry or **rewrites it consolidated** (`cat >`) — merging near-duplicates, folding per-run status into standing themes, dropping stale entries (~25-bullet cap) — but never drops a still-valid `known_pattern`. Memory is load-bearing: it's read back into every review.
 - Survives PR close (cleanup deletes only the log branch).
 
 ## Log branches

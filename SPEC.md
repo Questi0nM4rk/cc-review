@@ -184,12 +184,14 @@ The workflow only writes the files; the GHA pushes (3-attempt retry; `git fetch 
 then `git checkout -B <branch> FETCH_HEAD` — no `origin/<branch>` tracking ref exists under the
 shallow single-branch clone). **GitLab local mode pushes none of these.**
 
-**Bounded size (decision: keep memory minimal).** The memory branch is deliberately small: gather
-observations are **not** persisted (only the tiny per-PR `review-state.json` marker is), so the
-per-PR footprint is ~bytes, not the multi-KB research dumps an earlier design wrote. The durable,
-append-only surface is `learnings/*.md` (concise factual bullets). Whether accumulated memory
-*measurably improves* later reviews is **not yet validated** — that needs a live before/after run on
-a repo with vs. without its slice, and a `learnings/*` cap is deferred until that evidence exists.
+**Bounded size (self-curating).** The memory branch is kept small two ways: (1) gather observations
+are **not** persisted (only the tiny per-PR `review-state.json` marker is), so the per-PR footprint
+is ~bytes, not the multi-KB research dumps an earlier design wrote; and (2) the memory agent
+**curates rather than appends blindly** — on each write it reads the existing file and either appends
+a genuinely-new entry or **rewrites it consolidated** (merging near-duplicates, folding run-by-run
+status into standing themes, dropping superseded entries), with a rough ~25-bullet cap per file. It
+**never drops a still-valid `known_pattern`** (that would cause re-flagging). Memory is read back into
+every review (gather phase) — the project treats it as load-bearing, not disposable.
 
 ---
 

@@ -272,15 +272,18 @@ const markerPrompt = (prNumber, head_sha, fileCount) =>
   `If the dir does not exist (local mode), say 'no marker dir (local mode)' and do nothing. Confirm in one line.`;
 
 const memoryPrompt = (ctx) =>
-  `Record durable project-review memory by APPENDING to files under ./${MEM} — a directory in your CURRENT working directory you ARE allowed to write to (the GHA stages it because the sandbox blocks /tmp). First run 'cat ${MEM}/MEMORY.md': if it errors, ${MEM} is absent (local dry-run) — do nothing and say 'no memory dir (local mode)'. If it succeeds you are in bot mode and MUST write.\n` +
-  `The dirs ${MEM} and ${MEM}/learnings already exist. Append with cat-heredoc (cat >> creates the file if absent); do NOT use mkdir/printf/tee/Write/Edit. Append concise, factual, imperative bullets:\n` +
-  `  ${MEM}/MEMORY.md                     one line on what this repo is / a recurring theme\n` +
-  `  ${MEM}/learnings/found-issues.md     notable issues confirmed this run (one bullet each)\n` +
-  `  ${MEM}/learnings/lessons.md          durable lessons for future reviews\n` +
-  `  ${MEM}/learnings/known-patterns.md   intentional patterns NOT to re-flag: ${JSON.stringify(ctx.known_patterns)}\n` +
-  `  ${MEM}/learnings/decisions.md        notable review decisions + rationale\n` +
-  `Record the ACTUAL confirmed issues from THIS run verbatim in found-issues.md (use only this list, do not invent):\n${ctx.findings && ctx.findings.length ? ctx.findings.map((f) => `  - ${f}`).join("\n") : "  (none confirmed this run)"}\n` +
-  `This run: event=${ctx.event}, ${ctx.confirmed} confirmed, ${ctx.resolved} resolved, ${ctx.stillOpen} open. After writing, confirm in one line which files you appended to. If a cat append errors, report the EXACT error verbatim.`;
+  `Maintain durable project-review memory under ./${MEM} — a directory in your CURRENT working directory you ARE allowed to write to (the GHA stages it; the sandbox blocks /tmp). First run 'cat ${MEM}/MEMORY.md': if it errors, ${MEM} is absent (local dry-run) — do nothing and say 'no memory dir (local mode)'. If it succeeds you are in bot mode and MUST curate it.\n` +
+  `CURATE this memory, do not just pile onto it. For EACH file below: first 'cat' it, THEN choose per file:\n` +
+  `  - APPEND a new entry (cat >> file) when it adds genuinely new, distinct knowledge; OR\n` +
+  `  - REWRITE the file (cat > file) with a consolidated version when entries are redundant, near-duplicate, stale, or superseded — MERGE related ones into a single sharper line, DROP what no longer holds, keep the durable signal. Always 'cat' the file FIRST so a rewrite never loses real knowledge.\n` +
+  `Use cat-heredoc ONLY (cat > overwrites a file, cat >> appends; both are allowed). Do NOT use mkdir/printf/tee/Write/Edit. Keep each file concise (rough cap ~25 bullets); if it would exceed that or accrue near-duplicates, consolidate by rewriting instead of appending. If a particular file has nothing new to add AND nothing worth consolidating, leave it UNCHANGED — never invent entries to look busy.\n` +
+  `  ${MEM}/MEMORY.md                   a FEW durable lines: what this repo is + its recurring review themes. NOT a per-run log — fold run-by-run status into the standing themes by rewriting; never let near-identical "run on <date>, N confirmed, M open" lines accumulate.\n` +
+  `  ${MEM}/learnings/found-issues.md   notable issues confirmed in reviews (one bullet each); merge duplicates of the same issue/location.\n` +
+  `  ${MEM}/learnings/lessons.md        durable lessons for future reviews.\n` +
+  `  ${MEM}/learnings/known-patterns.md intentional patterns NOT to re-flag (this run's: ${JSON.stringify(ctx.known_patterns)}). These are EXACT suppression rules, not prose: only APPEND new ones and remove EXACT-duplicate lines; PRESERVE every existing line verbatim. NEVER merge, paraphrase, summarize, or judge a pattern 'stale' — losing a line makes future runs re-flag it.\n` +
+  `  ${MEM}/learnings/decisions.md      notable review decisions + rationale.\n` +
+  `Record the ACTUAL confirmed issues from THIS run in found-issues.md (use only this list, do not invent):\n${ctx.findings && ctx.findings.length ? ctx.findings.map((f) => `  - ${f}`).join("\n") : "  (none confirmed this run)"}\n` +
+  `This run: event=${ctx.event}, ${ctx.confirmed} confirmed, ${ctx.resolved} resolved, ${ctx.stillOpen} open — reflect the recurring signal in MEMORY.md's themes, not a raw run-log line. After writing, confirm in one line which files you appended to vs rewrote. If a cat write errors, report the EXACT error verbatim.`;
 
 // ============================================================================
 // PURE-JS HELPERS (deterministic)
