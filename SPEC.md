@@ -76,9 +76,10 @@ identified by a hidden marker `<!-- cc-review:overview -->`:
 - **marker absent → FIRST REVIEW** (§5.A)
 - **marker present → RE-RUN** (§5.B)
 
-The overview comment thus doubles as the per-PR "have I reviewed this before" state flag.
-(Consequence: if a user deletes the overview comment, the next run is treated as a first
-review. Accepted.)
+The overview comment is the **primary** per-PR "have I reviewed this before" flag, but not the
+only one: if a user deletes it, the **review-state marker** (§7) still proves the PR was reviewed,
+so the bot takes the re-run path rather than silently redoing a from-scratch first review (#19). A
+significant re-run then re-posts the overview.
 
 ---
 
@@ -171,13 +172,24 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   **not** review context and is never fed back to a reviewer. (Gather observations are deliberately
   **not** persisted — an earlier "research cache" stored them but nothing ever read them back, so it
   was dropped.)
-- **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on re-runs.
+- **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on
+  re-runs. It is the **primary** first-vs-re-run signal, but **not the only one**: if a user deletes
+  it, the review-state marker still proves the PR was reviewed, so the bot takes the re-run path
+  rather than silently re-doing a from-scratch first review (#19). A significant re-run then re-posts
+  the overview.
 - **Log branch** — `pr-<N>-cc-review-output` in the **consumer** repo; per-PR run artifacts;
   **deleted on PR close** by `cc-review-cleanup.yml`. A gitleaks gate scans run output before push.
 
 The workflow only writes the files; the GHA pushes (3-attempt retry; `git fetch origin <branch>`
 then `git checkout -B <branch> FETCH_HEAD` — no `origin/<branch>` tracking ref exists under the
 shallow single-branch clone). **GitLab local mode pushes none of these.**
+
+**Bounded size (decision: keep memory minimal).** The memory branch is deliberately small: gather
+observations are **not** persisted (only the tiny per-PR `review-state.json` marker is), so the
+per-PR footprint is ~bytes, not the multi-KB research dumps an earlier design wrote. The durable,
+append-only surface is `learnings/*.md` (concise factual bullets). Whether accumulated memory
+*measurably improves* later reviews is **not yet validated** — that needs a live before/after run on
+a repo with vs. without its slice, and a `learnings/*` cap is deferred until that evidence exists.
 
 ---
 
@@ -195,10 +207,21 @@ opus·xhigh anchors; the next `sonnetCount` run on sonnet specialists. Same inpu
 
 **JS prefilter (cheap, deterministic):** compare the current PR head against `reviewed_head_sha`
 from the review-state marker (§7). Flag as significant if **any of**: a file added or removed; OR
-> 25% of the previously-reviewed files changed; OR > 150 net added lines since the last review.
-**Agent confirm (sonnet):** only for cases **near** the thresholds (e.g. within 20%), an agent
+≥ `files_pct` of the previously-reviewed files changed; OR ≥ `added_lines` net added lines since
+the last review.
+**Agent confirm (sonnet):** only for cases **near** the thresholds (within `borderline`), an agent
 judges whether the change is substantive enough to warrant a fresh holistic pass. Clear-cut
-cases skip the agent. *(Thresholds are defaults — tunable.)*
+cases skip the agent.
+
+**Thresholds (rationale + tunable).** Defaults `files_pct=0.25`, `added_lines=150`, `borderline=0.2`
+(`borderline` is internal). Rationale: a quarter of the files changing, or ~150 new lines, is the
+rough boundary between "a touch-up that the prior overview still describes" and "a new chunk of
+work worth re-researching" for a typical service repo — small enough that a real feature addition
+trips it, large enough that a typo/rename pass does not. They are **guesses sized for a mid-size
+repo**, so `files_pct` and `added_lines` are overridable per project in `.cc-review.yaml`
+(`significant_change:`) — raise them for a large monorepo, lower them for a tiny library. A new or
+removed file is always significant regardless. The prefilter behavior is pinned by the
+`sigChangePrefilter` tests (clear-cut significant / not-significant / borderline / config-override).
 
 ---
 

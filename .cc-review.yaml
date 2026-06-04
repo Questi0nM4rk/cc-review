@@ -30,3 +30,13 @@ instructions: ""
 # Intentional patterns the reviewer must NOT flag (prevents recurring false positives).
 known_patterns: []
 #  - "Broad exception handlers in middleware are intentional."
+
+# Significant-change thresholds for re-runs. On a re-run the squad always re-reviews;
+# these decide whether a push is big enough to ALSO re-run web research + redraw the
+# overview in place. Defaults are sized for a typical service repo; tune for a large
+# monorepo (raise) or a tiny lib (lower). A new/removed file is always significant.
+#   files_pct   : fraction of previously-reviewed files that must change   (default 0.25)
+#   added_lines : net added lines since the last review to count as big    (default 150)
+# significant_change:
+#   files_pct: 0.25
+#   added_lines: 150

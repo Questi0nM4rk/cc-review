@@ -24,7 +24,7 @@ const EXPORTS = [
   "changedFiles", "addedLineCount", "sanitizeContext", "dropAlreadyThreaded", "selectReplies",
   "langsForDiff", "globToRe", "applyIgnorePaths", "mergeLangs", "buildProjectContext",
   "normalizeDomain", "relevanceScores", "pickSquad", "dedup", "stampHash",
-  "buildPayload", "difficultyPath", "difficultyFloor", "fixMermaid", "sigChangePrefilter",
+  "buildPayload", "difficultyPath", "difficultyFloor", "fixMermaid", "sigChangePrefilter", "resolveSig",
 ];
 
 const raw = readFileSync(BRAIN, "utf8");
@@ -464,6 +464,26 @@ test("sigChangePrefilter: tiny change well under thresholds => not significant",
 test("sigChangePrefilter: borderline line count => defers to the agent", () => {
   const r = H.sigChangePrefilter(plusLines(130), new Array(10).fill("f"), { reviewed_file_count: 10 });
   assert.deepEqual({ decided: r.decided, borderline: r.borderline }, { decided: false, borderline: true });
+});
+
+test("resolveSig: defaults when no config, valid overrides applied, junk rejected (#17)", () => {
+  assert.deepEqual(H.resolveSig({}), { filesPct: 0.25, addedLines: 150, borderline: 0.2 });
+  assert.deepEqual(H.resolveSig(undefined), { filesPct: 0.25, addedLines: 150, borderline: 0.2 });
+  assert.deepEqual(H.resolveSig({ significant_change: { files_pct: 0.5, added_lines: 400 } }),
+    { filesPct: 0.5, addedLines: 400, borderline: 0.2 });
+  // junk -> fall back to defaults (files_pct must be 0<x<1, added_lines a positive number)
+  assert.deepEqual(H.resolveSig({ significant_change: { files_pct: 9, added_lines: -3 } }),
+    { filesPct: 0.25, addedLines: 150, borderline: 0.2 });
+});
+
+test("sigChangePrefilter: a higher configured added_lines threshold relaxes the bar (#17)", () => {
+  const files = new Array(10).fill("f"); // same file count -> only the line threshold is in play
+  const meta = { reviewed_file_count: 10 };
+  // +130 lines at the default (150): borderline -> defers to the agent
+  assert.equal(H.sigChangePrefilter(plusLines(130), files, meta).decided, false);
+  // raise added_lines to 200 (monorepo): the same push is now clearly NOT significant
+  const tuned = H.sigChangePrefilter(plusLines(130), files, meta, H.resolveSig({ significant_change: { added_lines: 200 } }));
+  assert.deepEqual({ decided: tuned.decided, significant: tuned.significant }, { decided: true, significant: false });
 });
 
 // ---------------------------------------------------------------------------
