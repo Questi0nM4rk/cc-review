@@ -92,7 +92,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git clone --depth 1 -b rewrite https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
+          git clone --depth 1 https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
           echo "CC_REVIEW_BOT_DIR=/tmp/cc-review-bot" >> "$GITHUB_ENV"
           mkdir -p /tmp/run
           # Agents are sandboxed to the workspace and cannot write /tmp or mkdir — pre-create

@@ -86,7 +86,7 @@ jobs:
           PR: ${{ steps.extract.outputs.pr_number }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git clone --depth 1 -b rewrite https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
+          git clone --depth 1 https://github.com/Questi0nM4rk/cc-review.git /tmp/cc-review-bot
           echo "CC_REVIEW_BOT_DIR=/tmp/cc-review-bot" >> "$GITHUB_ENV"
           # Agents write under the workspace (sandbox blocks /tmp writes): scratch + memory + research cache.
           mkdir -p /tmp/run .cc-run ".cc-memory/learnings" ".cc-memory/pr-${PR}/research"

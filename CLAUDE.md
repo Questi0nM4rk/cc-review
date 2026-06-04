@@ -20,8 +20,7 @@ open TODOs.
 
 ## Branch model — IMPORTANT
 
-- Consumers' GHA clones cc-review with `git clone --depth 1 -b rewrite`. **`rewrite` is the live brain branch** — push brain changes there; consumers pick them up on the next run.
-- `main` lags. The workflow is develop-on-`rewrite`, then PR `rewrite → main`.
+- Consumers' GHA clones cc-review with `git clone --depth 1` (the **default branch `main` is the live brain**) — push brain changes to `main`; consumers pick them up on the next run.
 - The shallow single-branch clone means **there are no `origin/<other-branch>` tracking refs in CI** — fetch explicitly and use `FETCH_HEAD`.
 
 ## Pipeline (strict-review.mjs) — see SPEC.md for the exact contract

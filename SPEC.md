@@ -237,9 +237,9 @@ runtime for the brain.
 
 ## 13. Branch model
 
-Consumers clone with `git clone --depth 1 -b rewrite`. **`rewrite` is the live brain branch**;
-`main` lags. Develop on `rewrite`, then PR `rewrite → main`. The shallow single-branch clone
-means there are **no `origin/<other-branch>` tracking refs** in CI — fetch explicitly and key
+Consumers clone with `git clone --depth 1` — the repo's **default branch `main` is the live
+brain**; push brain changes to `main` and consumers pick them up on the next run. The shallow
+single-branch clone means there are **no `origin/<other-branch>` tracking refs** in CI — fetch explicitly and key
 off `FETCH_HEAD`.
 
 ---
