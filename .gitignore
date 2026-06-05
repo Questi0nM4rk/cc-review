@@ -8,3 +8,7 @@ node_modules/
 .cc-memory/
 .cc-memory.*/
 .cc-run/
+
+# Playwright MCP scratch (snapshots, screenshots, downloaded App keys) — used
+# locally to set up / recover the GitHub App; never part of a CI run.
+.playwright-mcp/
