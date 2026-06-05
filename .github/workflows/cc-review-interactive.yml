@@ -37,6 +37,10 @@ jobs:
       pull-requests: write
       issues: write
 
+    # Which cc-review ref the pipeline is cloned from. Consumers track `main`.
+    env:
+      CC_BOT_REF: main   # cc-review ref the pipeline is cloned from
+
     steps:
       - name: Checkout consumer repo
         uses: actions/checkout@v6
@@ -80,18 +84,25 @@ jobs:
             -f body="> **cc-review** is on it... :hourglass_flowing_sand:" --jq '.id')
           echo "comment_id=$ID" >> "$GITHUB_OUTPUT"
 
-      # The pipeline (clone bot, prefetch, install, run with the @cc-review intent + ping override,
-      # surface failures, push the log + memory branches) lives in the shared composite action.
+      # Runtime-cloned pipeline (see cc-review.yml for why a script, not a composite action).
+      # The @cc-review message was written to /tmp/cc-user-msg.txt above; ci-run.sh reads it.
+      - name: Clone cc-review bot
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git clone --depth 1 -b "$CC_BOT_REF" \
+            "https://x-access-token:${GH_TOKEN}@github.com/Questi0nM4rk/cc-review.git" /tmp/cc-review-bot
+
       - name: Run cc-review
         id: cc-review
-        uses: Questi0nM4rk/cc-review/.github/actions/cc-review-run@main
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          pr-number: ${{ steps.extract.outputs.pr_number }}
-          repo: ${{ github.repository }}
-          post: "1"
-          ping-override: "true"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          PR_NUMBER: ${{ steps.extract.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+          CC_POST: "1"
+          PING_OVERRIDE: "true"
+        run: bash /tmp/cc-review-bot/scripts/ci-run.sh
 
       - name: Update status comment
         if: always()

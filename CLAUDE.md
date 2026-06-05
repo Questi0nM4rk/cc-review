@@ -12,6 +12,7 @@ open TODOs.
 - `scripts/review-platform.ts` — platform adapter: `detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply` (GitHub via `gh`, GitLab local).
 - `scripts/analysis-tools.ts` — semgrep/lizard runner used by the gather phase.
 - `scripts/run-local.sh` — local harness (lays down `/tmp` scaffolding, runs the brain via `claude -p`, `post=false`).
+- `scripts/ci-run.sh` — the CI pipeline (prefetch → install → `claude -p` → push log+memory). Consumer workflows clone cc-review at runtime (App token) and run this; replaces the #18 composite action, which can't be referenced cross-repo from a private repo on a personal account.
 - `scripts/verify-gate.test.mjs` — contract spec for the fetch identity gate (`node scripts/verify-gate.test.mjs`).
 - `lang-refs/` — per-language checklists reviewers pull with `cat`.
 - `.github/workflows/cc-review*.yml` — the GHA templates installed into consumer repos (review, interactive ping, cleanup).
@@ -103,12 +104,14 @@ Also fixed: two invisible control-byte corruptions in the brain (sanitizeContext
 
 ### Open / outstanding
 
-- **#18 — composite action: MERGED + VERIFIED.** The shared pipeline lives once in
-  `.github/actions/cc-review-run/action.yml`; both workflows call it via
-  `uses: Questi0nM4rk/cc-review/.github/actions/cc-review-run@main`. Verified live on PR #38/#39
-  (App-token + checkout + full `claude -p` pipeline green; the bot posted + approved).
-  (Reviews on cc-review itself need no access toggle; OTHER same-owner consumer repos may need the
-  cc-review repo's Settings → Actions → Access toggled to allow them.)
+- **#18 — composite action: REVERTED → runtime-cloned `scripts/ci-run.sh`.** The composite
+  (`uses: …/cc-review-run@main`) could NOT be referenced cross-repo from a **private** repo on a
+  **personal** account — `uses:` resolves at "Set up job" with the consumer's own `GITHUB_TOKEN`,
+  which can't read the private bot repo (the `access_level` sharing setting is org-only; setting it
+  to `user` did not help). It only ever worked for cc-review reviewing **itself** (same repo). Now
+  both entry workflows clone cc-review at runtime via the **App token** (which CAN read the private
+  repo) and run `scripts/ci-run.sh` — leaner (one clone, not uses-fetch + clone), still DRY +
+  runtime-updated. Verified live on cc-review (#40) and consumer `feats`.
 - **#21 — clean install (live):** code-side done; still needs a fresh install on a throwaway repo →
   real review, end-to-end, following only `scripts/` + README.
 - **#11 — GitLab mode (live):** never run live. Needs a real GitLab MR + `glab` authed; run the brain

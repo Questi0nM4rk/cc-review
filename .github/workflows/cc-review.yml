@@ -46,6 +46,10 @@ jobs:
       pull-requests: write   # post reviews, resolve threads
       issues: write          # post the walkthrough + status comments
 
+    # Which cc-review ref the pipeline is cloned from. Consumers track `main`.
+    env:
+      CC_BOT_REF: main   # cc-review ref the pipeline is cloned from
+
     steps:
       - name: Checkout consumer repo (PR head)
         uses: actions/checkout@v6
@@ -90,15 +94,26 @@ jobs:
           echo "should_run=$RUN" >> "$GITHUB_OUTPUT"
           echo "Decision: should_run=$RUN"
 
-      # The whole pipeline (clone bot, prefetch diff + memory, install tooling, run the review,
-      # surface failures, push the log + memory branches) lives in the shared composite action.
-      - name: Run cc-review
+      # The pipeline is a runtime-cloned script (scripts/ci-run.sh) in cc-review. A PRIVATE
+      # repo's composite action can't be referenced cross-repo from a personal account, so we
+      # clone the bot with the App token (which CAN read the private repo) and run it. Editing
+      # ci-run.sh updates every consumer on its next run — same runtime-update model as the brain.
+      - name: Clone cc-review bot
         if: steps.gate.outputs.should_run == 'true'
-        uses: Questi0nM4rk/cc-review/.github/actions/cc-review-run@main
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          pr-number: ${{ steps.gate.outputs.pr_number }}
-          repo: ${{ github.repository }}
-          post: "1"
-          ping-override: "false"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git clone --depth 1 -b "$CC_BOT_REF" \
+            "https://x-access-token:${GH_TOKEN}@github.com/Questi0nM4rk/cc-review.git" /tmp/cc-review-bot
+
+      - name: Run cc-review
+        id: cc-review
+        if: steps.gate.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+          CC_POST: "1"
+          PING_OVERRIDE: "false"
+        run: bash /tmp/cc-review-bot/scripts/ci-run.sh

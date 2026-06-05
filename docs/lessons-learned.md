@@ -80,14 +80,20 @@ Hard-won while working the post-rebuild audit backlog (tracking issue #24). Each
 - **Verify the READ path before building a WRITE path.** The "research cache" wrote ~10 KB of gather
   observations per PR that nothing ever read back ("reuse research" was really "skip research"). Pure
   complexity + unbounded growth. Cut it (#8); kept only a tiny `review-state.json` marker.
-- **Composite / reusable GHA actions referenced via `uses:` do NOT fit a private runtime-cloned bot.**
-  `uses: owner/repo/...@ref` resolves BEFORE any step runs, so it can't use the App token the way the
-  brain-clone does — a private action repo 404s for consumers without a cross-repo access toggle (or
-  going public). Same-owner private works with the toggle; cross-owner needs a runtime-cloned shared
-  script instead. Decide the access model BEFORE reaching for composite actions.
-- **`steps.<id>.outcome` is unreliable INSIDE a composite action.** Key failure-detection on artifacts
-  (e.g. "no final result object in `session.jsonl`"), not on a composite step's outcome — a quota-kill
-  leaves no result object regardless, which is the more robust signal anyway.
+- **Composite / reusable GHA `uses:` actions do NOT work cross-repo for a private bot on a PERSONAL
+  account — CONFIRMED, and the access toggle does NOT save you.** `uses: owner/repo/...@ref` resolves
+  at "Set up job" with the consumer's own `GITHUB_TOKEN` (not the App token), so a private action repo
+  fails with `Unable to resolve action … not found`. The Actions `access_level` sharing setting is an
+  ORG feature: setting a personal repo to `access_level=user` did **not** grant other personal repos
+  access (verified — feats still 404'd after the toggle). So the #18 composite only ever worked for
+  cc-review reviewing **itself**. Fix (live): both entry workflows clone cc-review at runtime via the
+  App token and run `scripts/ci-run.sh` — one clone, DRY, runtime-updated. Going public would also fix
+  resolution but leaks the `claude-reviewer/memory` branch (private-repo findings). **For a private
+  personal-account bot: runtime-cloned script, never a cross-repo `uses:`.**
+- **Key failure-detection on the run ARTIFACT, not a wrapper step's outcome.** `ci-run.sh` decides
+  pass/fail from `session.jsonl` ("no final result object" = died mid-run, usually a quota kill) and
+  exits non-zero itself — a quota-kill leaves no result object regardless, the robust signal.
+  (Historically this also mattered because `steps.<id>.outcome` was unreliable inside the #18 composite.)
 - **git's default `core.quotepath=true` C-escapes non-ASCII paths** (`"a/caf\303\251/..."`) in the
   `git diff` fallback → `changedFiles` extracts nothing and inline comments fail to post. Use
   `git -c core.quotepath=false diff` so paths match the `gh` API path's raw UTF-8.
