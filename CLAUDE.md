@@ -11,8 +11,9 @@ open TODOs.
 - `.claude/workflows/strict-review.mjs` — the brain: the entire review pipeline as one Workflow script (phases below).
 - `scripts/review-platform.ts` — platform adapter: `detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply` (GitHub via `gh`, GitLab local).
 - `scripts/analysis-tools.ts` — semgrep/lizard runner used by the gather phase.
-- `scripts/run-local.sh` — local harness (lays down `/tmp` scaffolding, runs the brain via `claude -p`, `post=false`).
-- `scripts/ci-run.sh` — the CI pipeline (prefetch → install → `claude -p` → push log+memory). Consumer workflows clone cc-review at runtime (App token) and run this; replaces the #18 composite action, which can't be referenced cross-repo from a private repo on a personal account.
+- `scripts/run-local.sh` — local DRY-RUN harness (lays down `/tmp` scaffolding, runs the brain via `claude -p`, `post=false` always — never touches a real PR/MR).
+- `scripts/ci-run.sh` — the **GitHub** CI pipeline (prefetch → install → `claude -p` → push log+memory). Consumer workflows clone cc-review at runtime (App token) and run this; replaces the #18 composite action, which can't be referenced cross-repo from a private repo on a personal account.
+- `scripts/run-gitlab.sh` — the **GitLab** entry point: run a real MR review **locally** and post via `glab` (your creds; no App, no CI, no branch pushes). Refuses to run on a GitHub repo (that's the CI path). This is the platform split: GitHub = CI/App, GitLab = local.
 - `scripts/verify-gate.test.mjs` — contract spec for the fetch identity gate (`node scripts/verify-gate.test.mjs`).
 - `lang-refs/` — per-language checklists reviewers pull with `cat`.
 - `.github/workflows/cc-review*.yml` — the GHA templates installed into consumer repos (review, interactive ping, cleanup).
@@ -114,9 +115,12 @@ Also fixed: two invisible control-byte corruptions in the brain (sanitizeContext
   runtime-updated. Verified live on cc-review (#40) and consumer `feats`.
 - **#21 — clean install (live):** code-side done; still needs a fresh install on a throwaway repo →
   real review, end-to-end, following only `scripts/` + README.
-- **#11 — GitLab mode (live):** never run live. Needs a real GitLab MR + `glab` authed; run the brain
-  locally (`scripts/run-local.sh`), verify post-overview / positioned inline findings / resolve / reply /
-  edit-overview, and fix inline-comment positioning against a real instance.
+- **#11 — GitLab mode (live):** the entry point now EXISTS — `scripts/run-gitlab.sh` (detect→gitlab gate,
+  fetch the MR via `glab`, run the brain with `post:true`, post via the `gl.*` adapter; no branch pushes;
+  refuses on a GitHub repo). Plumbing + the github-refusal gate are verified locally. **Still needs one
+  live run** against a real MR with `glab` authed (e.g. a self-hosted GitLab instance over VPN, on a throwaway MR):
+  confirm post-overview / positioned inline findings / resolve / reply / edit-overview. The known risk is
+  `gl.postReview` inline-comment positioning (needs the MR `diff_refs`) — flagged at review-platform.ts:250.
 - Minor: old stray branch `claude/add-review-logging-xcGnC`; the `pr-12-cc-review-output` orphan log branch.
 
 ### Reference

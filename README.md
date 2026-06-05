@@ -104,7 +104,9 @@ The only intent the message selects is **answer-only** (a question → a reply, 
 
 **Manual** — add the `cc-review` label, or `workflow_dispatch` with a PR number. The `no-review` label suppresses auto-runs.
 
-## Setup
+## Setup — GitHub (CI + App)
+
+*(GitLab is local-only — see [GitLab — local mode](#gitlab--local-mode) below.)*
 
 1. **Create the GitHub App** (`./scripts/setup.sh`) with permissions: Contents R/W, Pull requests R/W, Issues R/W, Metadata R. No webhook events are needed — the bot runs from your repo's own GitHub Actions (`pull_request` / `issue_comment`); the App only provides the review identity + token.
 2. **Install the App on All repositories** (account-wide — current & future repos) or, at minimum, your target repo *and* `Questi0nM4rk/cc-review` (so CI can clone the brain). *(No marketplace install — the bot is self-contained.)*
@@ -122,9 +124,25 @@ The only intent the message selects is **answer-only** (a question → a reply, 
 | `claude-reviewer/memory` | bot repo | per-project learnings: `MEMORY.md` + `learnings/{lessons,found-issues,known-patterns,decisions}.md`; and a tiny per-PR `<owner>/<repo>/pr-<N>/review-state.json` marker (head sha + file count) the significant-change check diffs against |
 | `pr-<N>-cc-review-output` | your repo | **ephemeral** per-PR run log (diff, session, result); gitleaks-scanned before push; auto-deleted when the PR closes |
 
-## GitLab / local mode
+## GitLab — local mode
 
-Where a CI bot app isn't allowed (e.g. corporate GitLab), run it **locally** against an MR. The platform adapter auto-detects GitLab and uses `glab`; the review and walkthrough post to the MR, but **no branches are pushed** — memory and run output stay in local files. Workflows run natively in your interactive session (and you can watch live via Remote Control).
+The engine (brain + adapter) is shared; only the **entry point** differs by platform:
+
+| | How it runs | Posts as |
+|---|---|---|
+| **GitHub** | **CI** — install the workflows ([Setup](#setup--github-ci--app)); the App reviews on `pull_request` / `@cc-review` | the `cc-review` App |
+| **GitLab** | **local** — `scripts/run-gitlab.sh --mr <iid>`, from inside your repo clone | you (your `glab` creds) |
+
+There is no GitLab App or CI install (so it works where a CI bot app isn't allowed — e.g. corporate GitLab). Run from inside a clone of the GitLab repo:
+
+```bash
+glab auth login --hostname gitlab.example.com   # once
+scripts/run-gitlab.sh --mr 42                    # review MR !42 and post to it
+scripts/run-gitlab.sh --mr 42 --dry-run          # review only, post nothing
+scripts/run-gitlab.sh --mr 42 --message "focus on the auth change"
+```
+
+The adapter auto-detects GitLab and uses `glab`; the review + walkthrough post to the MR, but **no branches are pushed** — review memory stays in a local `.cc-memory/` (add it to `.gitignore`). The runner **refuses to run on a GitHub repo** — use the CI workflows there. For a quick no-post smoke test on any diff (either platform), `scripts/run-local.sh` is the dry-run harness.
 
 ## Troubleshooting
 
