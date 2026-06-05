@@ -12,9 +12,9 @@
 #  (see cc-review-interactive.yml). The `cc-review` label and a manual
 #  workflow_dispatch are always-on overrides; the `no-review` label suppresses.
 #
-#  The shared pipeline (clone/prefetch/install/run/push) lives ONCE in the
-#  composite action .github/actions/cc-review-run — both this and the interactive
-#  workflow call it, so the heavy logic is edited in one place.
+#  The shared pipeline (prefetch/install/run/push) lives ONCE in scripts/ci-run.sh in
+#  the cc-review repo — both this and the interactive workflow clone cc-review at runtime
+#  (with the App token) and run it, so the heavy logic is edited in one place.
 #
 #  Requires repo secrets: CLAUDE_CODE_OAUTH_TOKEN, REVIEWER_APP_CLIENT_ID,
 #  REVIEWER_APP_PRIVATE_KEY. See the cc-review SPEC.md for GitHub App setup.

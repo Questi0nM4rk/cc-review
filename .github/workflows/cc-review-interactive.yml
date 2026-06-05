@@ -10,7 +10,7 @@
 #  the workflow as data (it can only select answer-only mode or override the
 #  re-review gate — it can never force an approval).
 #
-#  The shared pipeline lives in the composite action .github/actions/cc-review-run.
+#  The shared pipeline lives in scripts/ci-run.sh (cloned at runtime from cc-review).
 # ============================================================================
 name: cc-review interactive
 
