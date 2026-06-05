@@ -276,15 +276,17 @@ cc-review/
 ├── .cc-review.yaml                  ← config template (copied to consumers)
 ├── .github/workflows/{cc-review,cc-review-interactive,cc-review-cleanup}.yml
 ├── .claude/workflows/strict-review.mjs   ← the entire review brain
-├── scripts/{review-platform,analysis-tools,setup}.ts, {setup,install-to-repo}.sh
+├── scripts/{review-platform,analysis-tools,setup}.ts, {setup,install-to-repo,ci-run}.sh
 ├── scripts/{check-brain,helpers.test,verify-gate.test}.mjs   ← CI: brain syntax gate + helper tests
 ├── .github/workflows/ci.yml             ← runs the syntax gate + node --test on push/PR
 ├── docs/{overview-diagram-standard.md, pipeline-diagram.html, lessons-learned.md, github-review-api.md}
 └── lang-refs/{dotnet,typescript,python,shell}.md
 ```
 
-Consumers get three workflow files + one config; CI clones this repo's **default branch `main`** at
-runtime for the brain (§13).
+Consumers get three workflow files + one config; their CI clones this repo's **default branch `main`**
+at runtime (with the App token) and runs `scripts/ci-run.sh` + the brain (§13). It does NOT use a
+cross-repo `uses:` composite action — a private repo's action can't be resolved cross-repo from a
+personal account, so the runtime clone (which the App token can read) is the delivery mechanism.
 
 ---
 
