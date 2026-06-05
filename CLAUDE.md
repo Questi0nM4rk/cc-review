@@ -69,30 +69,52 @@ Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-re
 - **Memory write** can't be reproduced locally (no sandbox locally) — verify it via the `--ref` dispatch and check the `claude-reviewer/memory` branch.
 - **Syntax:** the brain uses top-level `return` (the Workflow runtime wraps the body), so `node --check` rejects it raw — wrap in `async function __wf(){ … }` first, then `node --check`.
 
-## Rebuild in progress (2026-06-04) — target = SPEC.md
+## State of the world (2026-06-05) — rebuild done, audit cleanup done, ONE blocker
 
-The brain is being rebuilt to the target workflow in `SPEC.md` (agreed from the hand-drawn
-design). The exact delta-vs-shipped **build list is SPEC.md §14**; the open prefs are **§15**.
-Headline changes: web-backed gatherers, a single **dedup+check** agent (grade+verify removed),
-a tiny **per-PR review-state marker** (`pr-<N>/review-state.json` on the memory branch — head sha +
-file count, *output* not memory; an earlier "research cache" that stored gather observations was
-**cut** because nothing read them back), **marker-based** first-vs-re-run detection, **overview
-edit-in-place**, the **re-review hard-stop gate** with ping override, **`answer`-only** intent, and
-the **significant-change check**.
+The rebuild to `SPEC.md` is **complete and live on `main`** (the shipped brain == the target spec).
+The post-rebuild audit (tracking issue **#24**) was then worked end-to-end. `SPEC.md` is the exact
+source of truth and now matches the code (§15 OPEN decisions resolved → "Settled defaults").
 
-CI mechanics (sandbox, `--allowedTools`, `FETCH_HEAD`, log/memory branches, gitleaks) are
-**unchanged** and still apply — see Hard CI constraints + lessons-learned. The GHA stages/pushes the
-`.cc-run/` scratch dir + the `pr-<N>/` slice (review-state marker) the same way it stages `.cc-memory`.
+### ⛔ TOP BLOCKER — the GitHub App is unreachable (the bot is DOWN)
 
-Still outstanding from before the rebuild:
-- **Merge feats PR #14** (GHA fixes → feats `main`) — a human merges (classifier blocks self-merge).
-- Eventually PR `rewrite → main`.
+A real `gh workflow run` dispatch (run 26985091589, against PR #36) failed at **"Generate GitHub App
+token"**: **`Integration not found - failed to create token for "Questi0nM4rk"`**. The App that
+`REVIEWER_APP_ID` points to is deleted/uninstalled or the secret is stale. **No review can run until
+this is fixed.** It is NOT a code bug (the token step is unchanged; it failed before any new code).
+Fix it FIRST — see the dedicated section at the end of `docs/lessons-learned.md`
+(github.com/settings/apps → confirm the App exists + is installed; check `REVIEWER_APP_ID` /
+`REVIEWER_APP_PRIVATE_KEY` on the cc-review repo; or `./scripts/setup.sh` to recreate).
 
-## State of the world (2026-06-04)
+### Closed this session (14 issues, one PR each → squash-merged to `main`)
 
-- `SPEC.md` is the **exact target spec**; `docs/overview-diagram-standard.md` is render-verified
-  (mermaid v11 via headless Chrome); `docs/pipeline-diagram.html` is the engine-internals viewer.
-- The brain on `rewrite` still reflects the **pre-rebuild** pipeline (triage/recon/grade/verify).
-  The rebuild to SPEC is **underway** — do not treat the currently-shipped phases as the target.
-- Pre-rebuild pipeline was verified live on `Questi0nM4rk/feats` (#12/#13); 7 bugs fixed that
-  session — see `docs/lessons-learned.md`.
+#7 gitleaks gate · #8 research-cache cut (→ tiny `pr-<N>/review-state.json` marker only) · #9+#13+#16
+completion/idempotency contract · #10 prompt-injection (data/instruction **fence**, not phrase
+regexes) · #12 edge-case diffs + non-ASCII `core.quotepath` fix · #14 deterministic difficulty floor ·
+#15 unit tests + CI + brain syntax gate (the repo now has CI: `.github/workflows/ci.yml`, 57 tests in
+`scripts/helpers.test.mjs`) · #17 configurable sig-change thresholds · #19 overview-state fallback (reuses
+the marker) · #20 self-curating memory (consolidate, don't append) · #21 (code-side: setup deploys the
+cleanup workflow + stale refs fixed) · #22 README quickstart+sample · #23 SPEC §15 resolved.
+Also fixed: two invisible control-byte corruptions in the brain (sanitizeContext / globToRe).
+
+### Open / outstanding
+
+- **#18 — composite action: MERGED (`096e46b`) but UNVERIFIED.** The shared pipeline now lives once in
+  `.github/actions/cc-review-run/action.yml`; both workflows call it via
+  `uses: Questi0nM4rk/cc-review/.github/actions/cc-review-run@main`. The verify dispatch couldn't reach
+  it (died at the App-token step above). Re-dispatch once the App is fixed:
+  `gh workflow run cc-review.yml --repo Questi0nM4rk/cc-review --ref main -f pr_number=<closed PR>`.
+  (Reviews on cc-review itself need no access toggle; OTHER same-owner consumer repos may need the
+  cc-review repo's Settings → Actions → Access toggled to allow them.)
+- **#21 — clean install (live):** code-side done; still needs a fresh install on a throwaway repo →
+  real review, end-to-end, following only `scripts/` + README.
+- **#11 — GitLab mode (live):** never run live. Needs a real GitLab MR + `glab` authed; run the brain
+  locally (`scripts/run-local.sh`), verify post-overview / positioned inline findings / resolve / reply /
+  edit-overview, and fix inline-comment positioning against a real instance.
+- Minor: old stray branch `claude/add-review-logging-xcGnC`; the `pr-12-cc-review-output` orphan log branch.
+
+### Reference
+
+- `docs/overview-diagram-standard.md` is render-verified (mermaid v11); `docs/pipeline-diagram.html` is
+  the engine-internals viewer. `docs/lessons-learned.md` has the CI constraints + this session's traps.
+- Memory branch `claude-reviewer/memory` is live and useful (read into every review); test-repo
+  research leftovers were pruned this session.

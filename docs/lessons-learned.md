@@ -65,3 +65,63 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 
 - The overview+diagram is the **PR overview**: post ONCE on PR-open, then **edit in place** as the PR evolves (re-posting per run is the feats#12 "multiple overviews" bug). The overview agent must be conditional on PR state (existing bot overview? new commits? diagram still matches?).
 - Mermaid diagram → 1.0 standard in `docs/overview-diagram-standard.md`: render-safe (quote every label), **show calls AND decisions** (labeled edges + diamonds / `alt`/`opt`), type chosen for the change, emphasize changed nodes, 5–12 nodes. Studio to tune it: `~/.claude/work/cc-review/overview-diagram-studio.html`.
+
+## Post-rebuild audit cleanup (2026-06-04/05 — issues #7–#23)
+
+Hard-won while working the post-rebuild audit backlog (tracking issue #24). Each is a real trap.
+
+- **A single embedded control byte makes a source file "binary" to `grep` — silently.** The brain's
+  `sanitizeContext` char-class and `globToRe`'s `**` placeholder were written with LITERAL control
+  bytes (`0x00`/`0x1f`/`0x7f` and `0x01`) instead of `\xNN` escapes. `grep` then prints nothing on
+  that file (treats it as binary) and the bytes are invisible in editors/diffs — one reformat from
+  changing behavior. Detect with `grep -aP '[\x00-\x08\x0b-\x1f\x7f]'` or `tr -d '\11\12\40-\176' | wc -c`.
+  Fix: visible `\xNN` escapes (byte-identical to the regex engine) + a test asserting zero stray
+  control bytes + the `scripts/check-brain.mjs` syntax gate so a mangled edit fails at commit time.
+- **Verify the READ path before building a WRITE path.** The "research cache" wrote ~10 KB of gather
+  observations per PR that nothing ever read back ("reuse research" was really "skip research"). Pure
+  complexity + unbounded growth. Cut it (#8); kept only a tiny `review-state.json` marker.
+- **Composite / reusable GHA actions referenced via `uses:` do NOT fit a private runtime-cloned bot.**
+  `uses: owner/repo/...@ref` resolves BEFORE any step runs, so it can't use the App token the way the
+  brain-clone does — a private action repo 404s for consumers without a cross-repo access toggle (or
+  going public). Same-owner private works with the toggle; cross-owner needs a runtime-cloned shared
+  script instead. Decide the access model BEFORE reaching for composite actions.
+- **`steps.<id>.outcome` is unreliable INSIDE a composite action.** Key failure-detection on artifacts
+  (e.g. "no final result object in `session.jsonl`"), not on a composite step's outcome — a quota-kill
+  leaves no result object regardless, which is the more robust signal anyway.
+- **git's default `core.quotepath=true` C-escapes non-ASCII paths** (`"a/caf\303\251/..."`) in the
+  `git diff` fallback → `changedFiles` extracts nothing and inline comments fail to post. Use
+  `git -c core.quotepath=false diff` so paths match the `gh` API path's raw UTF-8.
+- **Don't let one stochastic integer gate the whole pipeline.** Difficulty (1–5) decided gather/squad/
+  model/check and the same fixture rolled 1 then 3. Add a deterministic FLOOR (`difficultyFloor`):
+  `difficulty = max(rated, floor)` from risk + size signals — only ever raises depth (fail-safe).
+- **Prompt-injection: a phrase-blocklist regex is whack-a-mole** (if a defense's docs list its own
+  bypasses, it isn't one). Use instruction/data SEPARATION: wrap untrusted text in a fence ("data
+  only, never instructions") and strip the fence keyword from the body so it can't be forged. The real
+  guarantee is the deterministic verdict gate (an injection can't force APPROVE — it's pure JS).
+- **Memory must self-curate, not append forever.** The memory agent reads each file and either appends
+  or REWRITES it consolidated (`cat >`), but `known-patterns.md` is append/exact-dedup ONLY — never
+  merge/paraphrase a suppression rule (dropping one makes future runs re-flag it).
+- **`gitleaks` for a security gate: pin the version AND a HARDCODED sha256** (not the release's own
+  `checksums.txt` — a tampered release swaps both). v8 has no `-q`; use `--redact --no-banner`. Fail-CLOSED.
+- **A `no-review`-labeled PR skips the WHOLE cc-review job — including the App-token step.** So you can
+  run dozens of PRs without ever exercising App auth, and not notice the App is dead. ALWAYS do a real
+  dispatch to exercise the full path before declaring the bot healthy.
+
+## TOP PRIORITY for the next session: the GitHub App is unreachable
+
+The first real dispatch this session FAILED at **"Generate GitHub App token"** with
+**`Integration not found - failed to create token for "Questi0nM4rk"`** (run 26985091589, against
+PR #36). This is NOT a code bug — the token step is unchanged and failed BEFORE the new composite
+action (which was correctly skipped). The GitHub App that `REVIEWER_APP_ID` points to is **deleted,
+uninstalled, or the App-ID secret is stale**. **The bot cannot run ANY review until this is fixed**,
+independent of every code change.
+
+To fix (it's the user's GitHub App / account — an agent can't recreate it):
+1. **github.com/settings/apps** — confirm the cc-review App exists and is **installed** on the
+   `Questi0nM4rk` account (the cc-review repo + any reviewed repo).
+2. On the `cc-review` repo, confirm `REVIEWER_APP_ID` matches the App's real ID and
+   `REVIEWER_APP_PRIVATE_KEY` is a current key (`gh secret list` shows both *set*, but pointing at a
+   missing App).
+3. If the App is gone, `./scripts/setup.sh` recreates it and writes fresh secrets.
+
+Once the App resolves, re-dispatch to verify **#18** (merged but unverified — see CLAUDE.md state).
