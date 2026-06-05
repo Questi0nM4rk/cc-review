@@ -259,9 +259,11 @@ Repository permissions: **Contents** R/W (memory + log branches), **Pull request
 (diff/threads, reviews, resolve), **Issues** R/W (overview + status comments), **Metadata** R.
 **No webhook events / subscriptions are needed** — the bot is driven by the consumer's own GitHub
 Actions (`pull_request`, `issue_comment`, `pull_request_review_comment`), and the App is used only
-for its token + permissions (its webhook is inactive). Install on **two** repos: the consumer, and
-`Questi0nM4rk/cc-review` (so CI can clone the brain). Consumer secrets:
-`CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_ID`, `REVIEWER_APP_PRIVATE_KEY`.
+for its token + permissions (its webhook is inactive). Install on **All repositories** (account-wide,
+the simplest model) or at minimum the consumer **and** `Questi0nM4rk/cc-review` (so CI can clone the
+brain). Consumer secrets: `CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_CLIENT_ID`, `REVIEWER_APP_PRIVATE_KEY`.
+The token step uses `actions/create-github-app-token@v3` with `client-id` (the App ID is the legacy
+identifier — v3 deprecates the `app-id` input).
 
 ---
 

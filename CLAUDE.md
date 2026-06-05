@@ -69,21 +69,26 @@ Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-re
 - **Memory write** can't be reproduced locally (no sandbox locally) — verify it via the `--ref` dispatch and check the `claude-reviewer/memory` branch.
 - **Syntax:** the brain uses top-level `return` (the Workflow runtime wraps the body), so `node --check` rejects it raw — wrap in `async function __wf(){ … }` first, then `node --check`.
 
-## State of the world (2026-06-05) — rebuild done, audit cleanup done, ONE blocker
+## State of the world (2026-06-05) — rebuild done, audit cleanup done, App auth FIXED + actions modernized
 
 The rebuild to `SPEC.md` is **complete and live on `main`** (the shipped brain == the target spec).
 The post-rebuild audit (tracking issue **#24**) was then worked end-to-end. `SPEC.md` is the exact
 source of truth and now matches the code (§15 OPEN decisions resolved → "Settled defaults").
 
-### ⛔ TOP BLOCKER — the GitHub App is unreachable (the bot is DOWN)
+### ✅ RESOLVED — the GitHub App auth is fixed; the bot is LIVE
 
-A real `gh workflow run` dispatch (run 26985091589, against PR #36) failed at **"Generate GitHub App
-token"**: **`Integration not found - failed to create token for "Questi0nM4rk"`**. The App that
-`REVIEWER_APP_ID` points to is deleted/uninstalled or the secret is stale. **No review can run until
-this is fixed.** It is NOT a code bug (the token step is unchanged; it failed before any new code).
-Fix it FIRST — see the dedicated section at the end of `docs/lessons-learned.md`
-(github.com/settings/apps → confirm the App exists + is installed; check `REVIEWER_APP_ID` /
-`REVIEWER_APP_PRIVATE_KEY` on the cc-review repo; or `./scripts/setup.sh` to recreate).
+Root cause of the long-standing failure (`run 26985091589` → `404 Integration not found`): the
+`REVIEWER_APP_ID` secret pointed at a **deleted** App's id, so `actions/create-github-app-token`
+couldn't resolve an integration. A `404` is an *App-ID* error — the private key was valid the whole
+time (a bad key gives `401`). Fixed by migrating auth to the App **Client ID**:
+- App `cc-review` — App ID `3045790`, Client ID `Iv23li5vyhPbOhwtOGZM`, installed **account-wide**
+  (All repositories) on `Questi0nM4rk`; one canonical key at `~/.claude/cc-review-app.pem`.
+- Secrets are now `CLAUDE_CODE_OAUTH_TOKEN`, **`REVIEWER_APP_CLIENT_ID`**, `REVIEWER_APP_PRIVATE_KEY`.
+- The token step is `actions/create-github-app-token@v3` with the `client-id` input (v3 deprecates
+  `app-id`).
+Verified live: PR **#38** (first review → **APPROVED**) and **#39** (the modernization PR, reviewed by
+the bot itself). Recovery runbook: the tail of `docs/lessons-learned.md` + the `add-cc-review` skill's
+`references/app-recovery.md`.
 
 ### Closed this session (14 issues, one PR each → squash-merged to `main`)
 
@@ -98,11 +103,10 @@ Also fixed: two invisible control-byte corruptions in the brain (sanitizeContext
 
 ### Open / outstanding
 
-- **#18 — composite action: MERGED (`096e46b`) but UNVERIFIED.** The shared pipeline now lives once in
+- **#18 — composite action: MERGED + VERIFIED.** The shared pipeline lives once in
   `.github/actions/cc-review-run/action.yml`; both workflows call it via
-  `uses: Questi0nM4rk/cc-review/.github/actions/cc-review-run@main`. The verify dispatch couldn't reach
-  it (died at the App-token step above). Re-dispatch once the App is fixed:
-  `gh workflow run cc-review.yml --repo Questi0nM4rk/cc-review --ref main -f pr_number=<closed PR>`.
+  `uses: Questi0nM4rk/cc-review/.github/actions/cc-review-run@main`. Verified live on PR #38/#39
+  (App-token + checkout + full `claude -p` pipeline green; the bot posted + approved).
   (Reviews on cc-review itself need no access toggle; OTHER same-owner consumer repos may need the
   cc-review repo's Settings → Actions → Access toggled to allow them.)
 - **#21 — clean install (live):** code-side done; still needs a fresh install on a throwaway repo →

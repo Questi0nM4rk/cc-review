@@ -274,14 +274,17 @@ async function main(): Promise<void> {
   const appResponseRaw = runOrFail(`gh api app-manifests/${manifestCode}/conversions --method POST`, { silent: true });
 
   let appId: string;
+  let clientId: string;
   let pemKey: string;
   let appSlug: string;
   try {
     const appResponse = JSON.parse(appResponseRaw);
     appId = String(appResponse.id);
+    clientId = String(appResponse.client_id || "");
     pemKey = appResponse.pem;
     appSlug = appResponse.slug || appName;
     if (!appId || !/^\d+$/.test(appId)) throw new Error("Invalid or missing App ID");
+    if (!clientId) throw new Error("Missing Client ID");
     if (!pemKey) throw new Error("Missing private key");
   } catch {
     err("Failed to get app credentials from GitHub.");
@@ -289,7 +292,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  ok(`GitHub App created (ID: ${appId}, slug: ${appSlug})`);
+  // App ID is the legacy identifier (kept for the user's records + as the JWT `iss` during
+  // recovery); the Client ID is what we store as a secret and what the v3 token action consumes.
+  ok(`GitHub App created (App ID: ${appId}, Client ID: ${clientId}, slug: ${appSlug})`);
 
   // ── Install app on repo ───────────────────────────────
   info(`Installing app on ${targetRepo}...`);
@@ -318,7 +323,7 @@ async function main(): Promise<void> {
   // ── Store secrets ─────────────────────────────────────
   info("Storing secrets...");
 
-  runOrFail(`gh secret set REVIEWER_APP_ID --repo ${targetRepo}`, { input: appId });
+  runOrFail(`gh secret set REVIEWER_APP_CLIENT_ID --repo ${targetRepo}`, { input: clientId });
   runOrFail(`gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${targetRepo}`, { input: oauthToken });
   runOrFail(`gh secret set REVIEWER_APP_PRIVATE_KEY --repo ${targetRepo}`, { input: pemKey });
 

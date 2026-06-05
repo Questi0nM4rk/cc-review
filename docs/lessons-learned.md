@@ -107,21 +107,24 @@ Hard-won while working the post-rebuild audit backlog (tracking issue #24). Each
   run dozens of PRs without ever exercising App auth, and not notice the App is dead. ALWAYS do a real
   dispatch to exercise the full path before declaring the bot healthy.
 
-## TOP PRIORITY for the next session: the GitHub App is unreachable
+## RESOLVED — the GitHub App auth (was: "unreachable")
 
-The first real dispatch this session FAILED at **"Generate GitHub App token"** with
-**`Integration not found - failed to create token for "Questi0nM4rk"`** (run 26985091589, against
-PR #36). This is NOT a code bug — the token step is unchanged and failed BEFORE the new composite
-action (which was correctly skipped). The GitHub App that `REVIEWER_APP_ID` points to is **deleted,
-uninstalled, or the App-ID secret is stale**. **The bot cannot run ANY review until this is fixed**,
-independent of every code change.
+`run 26985091589` failed at **"Generate GitHub App token"** with **`404 Integration not found`**. Root
+cause: the `REVIEWER_APP_ID` secret pointed at a **deleted** App's id (written 2026-03-19 from an App
+that no longer existed), while the live App `cc-review` (id `3045790`) was never wired in.
 
-To fix (it's the user's GitHub App / account — an agent can't recreate it):
-1. **github.com/settings/apps** — confirm the cc-review App exists and is **installed** on the
-   `Questi0nM4rk` account (the cc-review repo + any reviewed repo).
-2. On the `cc-review` repo, confirm `REVIEWER_APP_ID` matches the App's real ID and
-   `REVIEWER_APP_PRIVATE_KEY` is a current key (`gh secret list` shows both *set*, but pointing at a
-   missing App).
-3. If the App is gone, `./scripts/setup.sh` recreates it and writes fresh secrets.
+The hard-won lesson — **read the error code, it names the failing input:**
+- **`404 Integration not found`** = the App-**ID**/Client-ID secret resolves to no App (or no install).
+- **`401 A JSON web token could not be decoded`** = the **private key** doesn't match the App.
+The key was valid the whole time; chasing a 404 by regenerating the key only spawns orphan keys.
 
-Once the App resolves, re-dispatch to verify **#18** (merged but unverified — see CLAUDE.md state).
+Fix (now the standing config): auth migrated to the App **Client ID** via `create-github-app-token@v3`.
+- Secrets: `REVIEWER_APP_CLIENT_ID` = `Iv23li5vyhPbOhwtOGZM`, `REVIEWER_APP_PRIVATE_KEY` <
+  `~/.claude/cc-review-app.pem` (the one canonical key). App installed **account-wide** (All repos).
+- Verify a key matches an App **locally** (no CI run, no new key): mint a JWT and call `GET /app` —
+  snippet in the `add-cc-review` skill's `references/app-recovery.md` (the full recovery runbook).
+- A private App is NOT readable via `GET /apps/<slug>` with a user token (404). Read its App ID /
+  Client ID / install scope from `github.com/settings/apps/cc-review` — the **Playwright MCP** drives
+  that browser flow (its own profile needs a one-time GitHub login; downloads, e.g. a generated key,
+  land in `.playwright-mcp/`).
+Verified live on PR #38 (first review → APPROVED) and #39 (the bot reviewed its own modernization).

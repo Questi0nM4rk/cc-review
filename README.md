@@ -107,8 +107,8 @@ The only intent the message selects is **answer-only** (a question → a reply, 
 ## Setup
 
 1. **Create the GitHub App** (`./scripts/setup.sh`) with permissions: Contents R/W, Pull requests R/W, Issues R/W, Metadata R. No webhook events are needed — the bot runs from your repo's own GitHub Actions (`pull_request` / `issue_comment`); the App only provides the review identity + token.
-2. **Install the App on two repos**: your target repo, and `Questi0nM4rk/cc-review` (so CI can clone the brain). *(No marketplace install — the bot is self-contained.)*
-3. **Add secrets** to the target repo: `CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_ID`, `REVIEWER_APP_PRIVATE_KEY`.
+2. **Install the App on All repositories** (account-wide — current & future repos) or, at minimum, your target repo *and* `Questi0nM4rk/cc-review` (so CI can clone the brain). *(No marketplace install — the bot is self-contained.)*
+3. **Add secrets** to the target repo: `CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_CLIENT_ID`, `REVIEWER_APP_PRIVATE_KEY`.
 4. **Copy the workflow files + config** into the target repo:
    ```bash
    ./scripts/install-to-repo.sh /path/to/your-repo
