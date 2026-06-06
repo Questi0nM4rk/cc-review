@@ -91,11 +91,17 @@ bot_count() { # $1 = api path under repos/$REPO
 BEFORE_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
 BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
 
+# --add-dir is REQUIRED and is a SEPARATE gate from --allowedTools and --dangerously-skip-permissions.
+# claude confines file access to cwd (the consumer checkout) + each --add-dir; the allowlist/skip-perms
+# only govern WHICH tools run and approval, NOT which paths they may touch. Without it the agent can't
+# read the bot clone ($CC_REVIEW_BOT_DIR) or the /tmp-staged inputs (cc-input.json, pr-diff.txt) — it
+# then non-deterministically refuses ("won't run a script I can't read"), giving flaky red checks (#49).
 claude -p "$PROMPT" \
   --model claude-sonnet-4-6 \
   --output-format stream-json --verbose \
   --allowedTools "Workflow,Bash(gh:*),Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
   --dangerously-skip-permissions \
+  --add-dir "$CC_REVIEW_BOT_DIR" --add-dir /tmp \
   | tee /tmp/run/session.jsonl || true
 jq -r 'select(.type=="result") | .result' /tmp/run/session.jsonl > /tmp/run/result.txt 2>/dev/null || true
 cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true

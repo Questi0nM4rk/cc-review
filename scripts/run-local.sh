@@ -145,6 +145,7 @@ claude -p "$PROMPT" \
   --output-format stream-json --verbose \
   --allowedTools "Workflow,Bash(gh:*),Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
   --dangerously-skip-permissions \
+  --add-dir /tmp \
   | tee /tmp/run/session.jsonl >/dev/null
 
 echo "----- workflow result -----"
