@@ -40,7 +40,10 @@ jobs:
     if: >-
       !contains(github.event.pull_request.labels.*.name, 'no-review') &&
       !contains(github.event.pull_request.user.login, '[bot]')
-    timeout-minutes: 30
+    # A cap, not a fixed cost — normal PRs finish in minutes and the job ends early. The heaviest
+    # path (difficulty 5: holistic + web gather + a 4-agent squad + opus check + post) on a large
+    # diff can run ~40-50 min, so 30 was too tight and cancelled real reviews mid-squad.
+    timeout-minutes: 60
     permissions:
       contents: write        # push memory + ephemeral log branches
       pull-requests: write   # post reviews, resolve threads

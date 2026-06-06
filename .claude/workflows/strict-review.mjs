@@ -21,9 +21,25 @@ export const meta = {
 // CONSTANTS
 // ============================================================================
 
-// In CI the agents' cwd is the consumer repo workspace; helpers resolve via the bot clone
-// dir ($CC_REVIEW_BOT_DIR, exported by the GHA); locally it falls back to '.' (repo root).
-const BOT = '${CC_REVIEW_BOT_DIR:-.}';
+// Normalize the injected Workflow `args`. It can arrive THREE ways: an object (correct), a
+// JSON-encoded STRING (an agent stringifies it when calling the Workflow tool — observed in CI),
+// or undefined (not passed / the helpers test importing this file, where `args` isn't even
+// declared). The `typeof args === "undefined"` lead is load-bearing: a bare `args` reference would
+// throw a ReferenceError when this module is imported without the global bound.
+const ARGS = (() => {
+  if (typeof args === "undefined") return {};
+  if (args && typeof args === "object") return args;
+  if (typeof args === "string" && args.trim()) { try { return JSON.parse(args); } catch { return {}; } }
+  return {};
+})();
+
+// In CI the agents' cwd is the consumer repo workspace, so a bare relative path resolves against
+// the WRONG repo. The bot's clone dir (an absolute path the runner knows) is therefore passed in
+// as args.bot_dir and baked into every adapter/tool path below. We must NOT use an env var here:
+// sub-agents don't inherit env, and `${CC_REVIEW_BOT_DIR:-.}` would expand IN THE AGENT SHELL to
+// '.' (the consumer root) — the silent no-op that made the review abort with a green check. When
+// no bot_dir is passed (the local harnesses run from the bot's own repo root) BOT falls back to '.'.
+const BOT = (typeof ARGS.bot_dir === "string" && ARGS.bot_dir.trim()) ? ARGS.bot_dir.trim() : ".";
 const ADAPTER = `${BOT}/scripts/review-platform.ts`;
 const TOOLS = `${BOT}/scripts/analysis-tools.ts`;
 const LANG_REFS = `${BOT}/lang-refs`;
@@ -529,7 +545,7 @@ function resolveSig(config) {
 // ORCHESTRATION
 // ============================================================================
 
-const a = args || {};
+const a = ARGS;
 
 // ---- Fetch -----------------------------------------------------------------
 phase("Fetch");

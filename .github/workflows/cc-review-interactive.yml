@@ -31,7 +31,8 @@ jobs:
       contains(github.event.comment.body, '@cc-review') &&
       (github.event_name == 'pull_request_review_comment' ||
        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null))
-    timeout-minutes: 30
+    # A cap, not a fixed cost — see cc-review.yml. The heaviest review path can run ~40-50 min.
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write

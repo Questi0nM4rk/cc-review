@@ -74,12 +74,28 @@ jq -n --arg pr "$PR_NUMBER" --arg repo "$REPO" --arg post "$CC_POST" --argjson p
   '{pr_number:($pr|tonumber), repo:$repo, platform:"github", post:($post=="1"), ping_override:$ping}' > /tmp/cc-input.json
 MSG_CLAUSE=""
 [ -s /tmp/cc-user-msg.txt ] && MSG_CLAUSE=", and the maintainer @cc-review message from /tmp/cc-user-msg.txt"
-PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs'. Run it to completion and report its return value verbatim as JSON. The workflow reads PR number, repo, post-flag, and project config from /tmp/cc-input.json, /tmp, and .cc-review.yaml${MSG_CLAUSE}."
+# bot_dir is passed via args (not an env var): the sandboxed brain agents don't inherit env, and
+# the agent shell can't expand $CC_REVIEW_BOT_DIR — it would collapse to the consumer repo root.
+PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs' and args { bot_dir: '${CC_REVIEW_BOT_DIR}' }. Run it to completion and report its return value verbatim as JSON. The workflow reads PR number, repo, post-flag, and project config from /tmp/cc-input.json, /tmp, and .cc-review.yaml${MSG_CLAUSE}."
+
+# Ground-truth snapshot (for the post-run gate): count the bot's EXISTING reviews + issue comments
+# on the PR BEFORE the run. After the run we re-count and require the relevant one to actually go up
+# when the brain claims it posted — we verify against GitHub, NOT the brain's self-reported flag.
+# Returns "ERR" on an API failure so the gate can skip (degrade to trusting the brain) instead of
+# false-failing on a transient query error. per_page=100 covers any realistic bot history depth.
+bot_count() { # $1 = api path under repos/$REPO
+  local out
+  out=$(gh api "repos/${REPO}/$1" 2>/dev/null) || { echo "ERR"; return; }
+  printf '%s' "$out" | jq -r 'if type=="array" then [.[] | select(.user.login // "" | test("cc-review";"i"))] | length else "ERR" end' 2>/dev/null || echo "ERR"
+}
+BEFORE_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
+BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
+
 claude -p "$PROMPT" \
   --model claude-sonnet-4-6 \
   --output-format stream-json --verbose \
   --allowedTools "Workflow,Bash(gh:*),Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
-  --permission-mode bypassPermissions \
+  --dangerously-skip-permissions \
   | tee /tmp/run/session.jsonl || true
 jq -r 'select(.type=="result") | .result' /tmp/run/session.jsonl > /tmp/run/result.txt 2>/dev/null || true
 cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true
@@ -98,6 +114,74 @@ if [ ! -s "$SESSION" ] || [ -z "$RESULT" ]; then
 elif [ "$IS_ERR" = "true" ]; then
   REASON="the run reported an error result"
 fi
+
+# 4b) A claude run that ends "cleanly" can still hide an ABORTED review: the brain returns
+# {ok:false,reason} on any fetch/adapter failure (BEFORE it posts anything). Without this check
+# that abort produced a green check with nothing posted — a broken review indistinguishable from
+# a clean approval (#46). Enforce the invariant: a green check ⇒ a review ran AND posted. Parse the
+# brain's return value (verbatim JSON in result.txt) and fail loudly otherwise.
+if [ -z "$REASON" ]; then
+  WF=$(node -e '
+    const fs=require("fs");
+    let hay=""; try{hay=fs.readFileSync("/tmp/run/result.txt","utf8");}catch{}
+    let best=null;
+    for(let i=0;i<hay.length;i++){
+      if(hay[i]!=="{")continue;
+      let depth=0,inStr=false,esc=false;
+      for(let j=i;j<hay.length;j++){
+        const c=hay[j];
+        if(esc){esc=false;continue;}
+        if(c==="\\"){esc=true;continue;}
+        if(c==="\"")inStr=!inStr;
+        if(inStr)continue;
+        if(c==="{")depth++;
+        else if(c==="}"){depth--;if(depth===0){
+          try{const o=JSON.parse(hay.slice(i,j+1));
+            if(o&&typeof o.ok==="boolean"&&(!best||("mode"in o)||("reason"in o)||("event"in o)))best=o;
+          }catch{}
+          break;
+        }}
+      }
+    }
+    process.stdout.write(best?JSON.stringify({ok:best.ok,posted:!(best.posted==null||best.posted===false),reason:String(best.reason||""),mode:String(best.mode||""),event:String(best.event||"")}):"");
+  ' 2>/dev/null)
+  if [ -z "$WF" ]; then
+    REASON="the review produced no parseable result object — cannot confirm a review was posted"
+  else
+    WF_OK=$(printf '%s' "$WF" | jq -r '.ok' 2>/dev/null)
+    WF_POSTED=$(printf '%s' "$WF" | jq -r '.posted' 2>/dev/null)
+    WF_REASON=$(printf '%s' "$WF" | jq -r '.reason' 2>/dev/null)
+    WF_MODE=$(printf '%s' "$WF" | jq -r '.mode' 2>/dev/null)
+    WF_EVENT=$(printf '%s' "$WF" | jq -r '.event' 2>/dev/null)
+    if [ "$WF_OK" != "true" ]; then
+      REASON="the review aborted before posting${WF_REASON:+ — $WF_REASON}"
+    elif [ "$CC_POST" = "1" ] && [ "$WF_POSTED" != "true" ]; then
+      REASON="the review ran (${WF_MODE:-unknown mode}) but posted nothing despite post being requested"
+    elif [ "$CC_POST" = "1" ]; then
+      # 4c) Don't TRUST the brain's self-reported 'posted' — VERIFY it landed on GitHub. The brain
+      # sets 'posted' from the post agent's own one-line confirmation, which it writes even when the
+      # API call failed (e.g. a 422, or the silent wrong-path no-op). Re-count the bot's reviews /
+      # comments and require an actual increase vs the pre-run snapshot. Review modes (first/rerun)
+      # always submit a review; answer / rerun-blocked post an issue comment. If a snapshot errored
+      # we skip (degrade to trusting the brain) rather than false-fail on a transient query glitch.
+      case "$WF_MODE" in
+        first|rerun)
+          AFTER_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
+          if [ "$BEFORE_REVIEWS" != "ERR" ] && [ "$AFTER_REVIEWS" != "ERR" ] && [ "${AFTER_REVIEWS:-0}" -le "${BEFORE_REVIEWS:-0}" ] 2>/dev/null; then
+            REASON="the brain reported a ${WF_MODE} review (${WF_EVENT:-?}) but no new cc-review review appeared on PR #${PR_NUMBER} — the post silently failed (self-report not trusted)"
+          fi
+          ;;
+        answer|rerun-blocked)
+          AFTER_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
+          if [ "$BEFORE_COMMENTS" != "ERR" ] && [ "$AFTER_COMMENTS" != "ERR" ] && [ "${AFTER_COMMENTS:-0}" -le "${BEFORE_COMMENTS:-0}" ] 2>/dev/null; then
+            REASON="the brain reported posting (${WF_MODE}) but no new cc-review comment appeared on PR #${PR_NUMBER}"
+          fi
+          ;;
+      esac
+    fi
+  fi
+fi
+
 if [ -n "$REASON" ]; then
   echo "::error::cc-review did not complete: ${REASON}"
   BODY="<!-- cc-review:status -->"$'\n'"**cc-review did not finish this run** — ${REASON}. No verdict was posted; any overview above may be stale. Re-run with \`@cc-review\` once resolved."

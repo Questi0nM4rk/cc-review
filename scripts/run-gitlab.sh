@@ -74,16 +74,19 @@ if ! grep -qsE '^\.cc-memory/?$' .gitignore; then
 fi
 
 echo "cc-review (GitLab local) — repo=$REPO  MR=!$MR  host=$HOST  post=$POST"
-export CC_REVIEW_BOT_DIR="$BOT"
 
-PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: ${MR}, repo: '${REPO}' }. Run it to completion and report its return value verbatim as JSON. It reads PR/MR number, repo, post-flag, and the @cc-review message from /tmp/cc-input.json + /tmp/cc-user-msg.txt, talks to GitLab via glab through ${ADAPTER}, and reads project config from .cc-review.yaml."
+# bot_dir is passed via args so the brain builds absolute adapter/tool paths (it can't read
+# $CC_REVIEW_BOT_DIR — sub-agents don't inherit env). Locally BOT is the bot repo root.
+PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: ${MR}, repo: '${REPO}', bot_dir: '${BOT}' }. Run it to completion and report its return value verbatim as JSON. It reads PR/MR number, repo, post-flag, and the @cc-review message from /tmp/cc-input.json + /tmp/cc-user-msg.txt, talks to GitLab via glab through ${ADAPTER}, and reads project config from .cc-review.yaml."
 
 # GitLab path: glab only (no gh). Posting is via the adapter's gl.* verbs.
+# --dangerously-skip-permissions, NOT --permission-mode bypassPermissions: the latter is silently
+# downgraded (to default/auto), which would block the agent's tool calls in a headless run.
 claude -p "$PROMPT" \
   --model claude-sonnet-4-6 \
   --output-format stream-json --verbose \
   --allowedTools "Workflow,Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
-  --permission-mode bypassPermissions \
+  --dangerously-skip-permissions \
   | tee /tmp/run/session.jsonl >/dev/null
 
 echo "----- workflow result -----"

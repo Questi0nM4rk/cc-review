@@ -114,10 +114,13 @@ printf 'scaffolded: mode=%s repo=%s pr=%s diff=%s lines  ->  /tmp/cc-input.json,
 # In --pr mode we also pass the expected target as args, which engages the identity
 # gate: if the fetch fails to resolve PR #N, the workflow aborts instead of reviewing
 # a fallback diff. Local-diff modes pass no args (pr_number 0 => local dry-run).
+# bot_dir is always passed so the brain builds absolute adapter/tool paths from it (it can't read
+# $CC_REVIEW_BOT_DIR — sub-agents don't inherit env). Locally BOT is the bot repo root, so this
+# matches the old '.' fallback; it just makes the path explicit instead of cwd-dependent.
 if [[ "$MODE" == "pr" ]]; then
-  WF_ARGS="{ prNumber: ${PR_NUMBER}, repo: '${REPO}' }"
+  WF_ARGS="{ prNumber: ${PR_NUMBER}, repo: '${REPO}', bot_dir: '${BOT}' }"
 else
-  WF_ARGS=""
+  WF_ARGS="{ bot_dir: '${BOT}' }"
 fi
 
 if [[ "$SCAFFOLD_ONLY" == true ]]; then
@@ -136,13 +139,12 @@ PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}'"
 [[ -n "$WF_ARGS" ]] && PROMPT="${PROMPT} and args ${WF_ARGS}"
 PROMPT="${PROMPT}. Run it to completion and report its return value verbatim as JSON. It reads PR number, repo, post-flag from /tmp/cc-input.json, the diff from /tmp/pr-diff.txt, and project config from .cc-review.yaml."
 
-export CC_REVIEW_BOT_DIR="$BOT"
 echo "running workflow headless via claude -p (post=false)…"
 claude -p "$PROMPT" \
   --model claude-sonnet-4-6 \
   --output-format stream-json --verbose \
   --allowedTools "Workflow,Bash(gh:*),Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
-  --permission-mode bypassPermissions \
+  --dangerously-skip-permissions \
   | tee /tmp/run/session.jsonl >/dev/null
 
 echo "----- workflow result -----"
