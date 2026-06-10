@@ -190,7 +190,11 @@ fi
 
 if [ -n "$REASON" ]; then
   echo "::error::cc-review did not complete: ${REASON}"
-  BODY="<!-- cc-review:status -->"$'\n'"**cc-review did not finish this run** — ${REASON}. No verdict was posted; any overview above may be stale. Re-run with \`@cc-review\` once resolved."
+  # IMPORTANT: this comment must NOT contain the literal '@cc-review' — the interactive workflow
+  # triggers on `issue_comment` bodies containing that token, so a failure comment that mentions it
+  # re-triggers the bot, which fails again on the same rate limit and re-posts → infinite self-loop
+  # that exhausts the org quota (#51). Tell the user to re-run the job instead of pinging the bot.
+  BODY="<!-- cc-review:status -->"$'\n'"**cc-review did not finish this run** — ${REASON}. No verdict was posted; any overview above may be stale. Re-run the cc-review job from this PR's **Checks** tab once resolved."
   gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --method POST -f body="$BODY" >/dev/null 2>&1 \
     || echo "(could not post the incomplete-run status comment)"
   RUN_FAILED=1

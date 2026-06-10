@@ -134,3 +134,29 @@ Fix (now the standing config): auth migrated to the App **Client ID** via `creat
   that browser flow (its own profile needs a one-time GitHub login; downloads, e.g. a generated key,
   land in `.playwright-mcp/`).
 Verified live on PR #38 (first review → APPROVED) and #39 (the bot reviewed its own modernization).
+
+---
+
+## Incident: the interactive self-comment loop (#51)
+
+`cc-review interactive` triggers on `issue_comment` bodies containing `@cc-review`. It had **no
+author guard**, and the bot posts status comments from inside its own runs. The failure-path comment
+(`ci-run.sh`'s "did not finish") used to say **"Re-run with `@cc-review`"** — so a rate-limited run
+posted a comment that re-triggered the workflow, which failed on the same limit and re-posted →
+**≥200 runs in ~24 min**, exhausting the org's 5-hour Anthropic quota (overage is org-disabled, so
+every request then hard-failed and starved all other Claude usage on the key).
+
+**Kill switch (do this first):** disable the looping workflow in the affected consumer repo —
+`gh workflow disable "cc-review interactive" --repo <owner>/<repo>`. Re-enable with `gh workflow
+enable` only after the fix is in. (A loop is also visible as a burst of runs: `gh run list --repo
+<r> --workflow cc-review-interactive.yml --limit 50`.)
+
+**Root-cause fixes (both shipped):**
+- **Author guard** in `cc-review-interactive.yml`: `if: github.event.comment.user.type != 'Bot' && …`.
+  The structural fix — bot comments can never trigger the workflow. Lives in the *consumer's* installed
+  file, so it must be re-distributed to existing consumers (not runtime-cloned).
+- **No trigger token on the failure path**: `ci-run.sh`'s status comment must never contain the literal
+  `@cc-review`. This is runtime-cloned, so it breaks the loop on every consumer the moment it's on `main`.
+
+Two layers because they distribute at different speeds: scrubbing the comment stops the loop instantly
+everywhere; the author guard is the belt-and-suspenders that doesn't depend on comment hygiene.

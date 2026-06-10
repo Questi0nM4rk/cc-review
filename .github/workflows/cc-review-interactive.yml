@@ -27,7 +27,11 @@ concurrency:
 jobs:
   respond:
     runs-on: ubuntu-latest
+    # The `user.type != 'Bot'` guard is load-bearing: without it, a status comment the bot posts
+    # that mentions @cc-review re-triggers this workflow → it fails (e.g. rate-limited) → posts
+    # another comment → infinite self-loop that exhausted the org quota (#51). Only humans ping.
     if: |
+      github.event.comment.user.type != 'Bot' &&
       contains(github.event.comment.body, '@cc-review') &&
       (github.event_name == 'pull_request_review_comment' ||
        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null))
