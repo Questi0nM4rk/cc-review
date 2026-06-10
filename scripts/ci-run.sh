@@ -83,10 +83,13 @@ PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/work
 # when the brain claims it posted — we verify against GitHub, NOT the brain's self-reported flag.
 # Returns "ERR" on an API failure so the gate can skip (degrade to trusting the brain) instead of
 # false-failing on a transient query error. per_page=100 covers any realistic bot history depth.
+# Match the EXACT bot identity (login == "cc-review[bot]" AND user.type == "Bot"), not a substring —
+# a human contributor whose login merely contains "cc-review" (e.g. "cc-reviewer-dave") would
+# otherwise inflate the count and mask a genuinely-failed post in this ground-truth gate.
 bot_count() { # $1 = api path under repos/$REPO
   local out
   out=$(gh api "repos/${REPO}/$1" 2>/dev/null) || { echo "ERR"; return; }
-  printf '%s' "$out" | jq -r 'if type=="array" then [.[] | select(.user.login // "" | test("cc-review";"i"))] | length else "ERR" end' 2>/dev/null || echo "ERR"
+  printf '%s' "$out" | jq -r 'if type=="array" then [.[] | select((.user.login // "") == "cc-review[bot]" and (.user.type // "") == "Bot")] | length else "ERR" end' 2>/dev/null || echo "ERR"
 }
 BEFORE_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
 BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")

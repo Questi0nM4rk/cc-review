@@ -37,9 +37,14 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Skip bot-authored PRs (user.type, robust — matches the interactive workflow's guard) and FORK
+    # PRs (their runs can't see repo secrets, so the App-token step would hard-fail → a permanent red
+    # X on every fork PR). workflow_dispatch has no pull_request object, so always allow it.
     if: >-
       !contains(github.event.pull_request.labels.*.name, 'no-review') &&
-      !contains(github.event.pull_request.user.login, '[bot]')
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.pull_request.user.type != 'Bot' &&
+        github.event.pull_request.head.repo.fork == false))
     # A cap, not a fixed cost — normal PRs finish in minutes and the job ends early. The heaviest
     # path (difficulty 5: holistic + web gather + a 4-agent squad + opus check + post) on a large
     # diff can run ~40-50 min, so 30 was too tight and cancelled real reviews mid-squad.

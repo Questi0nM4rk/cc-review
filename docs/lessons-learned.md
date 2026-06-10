@@ -8,7 +8,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
   - `claude -p "/my-workflow"` → **"Unknown command"**. User-invoked slash commands are interactive-only.
   - `Workflow` tool with `name: "my-workflow"` → **"not found"**. Project `.claude/workflows/*.mjs` are NOT auto-registered (only built-ins like `deep-research`, `code-review` are).
   - `Workflow` tool with `scriptPath: "<abs path>"` → **runs and returns**. This is the only headless path.
-  - Invocation: `claude -p "Use the Workflow tool with scriptPath '…/strict-review.mjs'. Report its return value." --allowedTools "Workflow,…" --output-format stream-json | tee` (use `--permission-mode bypassPermissions` in CI).
+  - Invocation: `claude -p "Use the Workflow tool with scriptPath '…/strict-review.mjs'. Report its return value." --allowedTools "Workflow,…" --output-format stream-json | tee` (use `--dangerously-skip-permissions` in CI — **not** `--permission-mode bypassPermissions`, which is silently downgraded to default/auto in a headless run and then blocks the agent's tool calls).
 
 ## Inputs — the biggest trap
 
@@ -39,7 +39,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 
 ## What works (don't second-guess these)
 
-- The cost-tiered cascade (triage → recon → 2 opus-xhigh + N sonnet → grade → verify), difficulty-scaled paths, and deterministic JS dedup/relevance. (Finding-format rules are enforced in the reviewer prompts, not a JS validator pass — the regex validators were removed after they produced false positives that dropped whole reviews.)
+- The difficulty-scaled pipeline (holistic → gather [2 web-research agents + memories/docs + static tools] → squad [2 opus-xhigh + N sonnet] → single check/false-positive-filter agent) and the deterministic JS dedup/relevance. (The old separate grade [opus] + verify [sonnet skeptics] passes were folded into the one check agent. Finding-format rules are enforced in the reviewer prompts, not a JS validator pass — the regex validators were removed after they produced false positives that dropped whole reviews.)
 - **`.cc-review.yaml` config wiring**: `instructions` and `known_patterns` reach the reviewers and shape findings (it correctly flagged a `!` non-null assertion because the config forbids them, and filtered false-positives via the grade pass).
 - The self-contained model: one `.claude/workflows/strict-review.mjs` + `scripts/` + `lang-refs/`, no marketplace submodule.
 

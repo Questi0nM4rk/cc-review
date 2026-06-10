@@ -32,9 +32,12 @@ a `/slash` command, not the Agent SDK):
 ```bash
 claude -p "Use the Workflow tool with scriptPath '$CC_REVIEW_BOT_DIR/.claude/workflows/strict-review.mjs'. Report its return value." \
   --allowedTools "Workflow,Bash,Read,Write,Grep,Glob,WebSearch,WebFetch" \
-  --permission-mode bypassPermissions \
+  --dangerously-skip-permissions \
   --output-format stream-json | tee "$RUN_DIR/session.jsonl"
 ```
+
+> Use `--dangerously-skip-permissions`, **not** `--permission-mode bypassPermissions`: the latter is
+> silently downgraded (to default/auto) in a headless run, which then blocks the agent's tool calls.
 
 - Sub-agents do **not** inherit env vars and are **filesystem-sandboxed to `$GITHUB_WORKSPACE`**
   (no `/tmp` writes). Inputs arrive via files the GHA stages (`/tmp/cc-input.json`,
@@ -167,8 +170,9 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
 
 - **Learnings** (durable, cross-PR): `MEMORY.md` + `learnings/{found-issues,lessons,known-patterns,decisions}.md`.
 - **Per-PR review-state marker** — `<owner>/<repo>/pr-<N>/review-state.json`, a tiny stamp
-  (`reviewed_head_sha`, `reviewed_file_count`) written as **run output, not learned memory** on
-  every posted review. The significant-change check (§9) diffs the current head against it; it is
+  (`reviewed_head_sha` — the real head commit SHA, for audit/traceability — and `reviewed_file_count`)
+  written as **run output, not learned memory** on every posted review. The significant-change check
+  (§9) compares the current PR's file/line counts against `reviewed_file_count`; it is
   **not** review context and is never fed back to a reviewer. (Gather observations are deliberately
   **not** persisted — an earlier "research cache" stored them but nothing ever read them back, so it
   was dropped.)
@@ -207,10 +211,13 @@ opus·xhigh anchors; the next `sonnetCount` run on sonnet specialists. Same inpu
 
 ## 9. Significant-change check (re-run, phase 5.B.4)
 
-**JS prefilter (cheap, deterministic):** compare the current PR head against `reviewed_head_sha`
-from the review-state marker (§7). Flag as significant if **any of**: a file added or removed; OR
-≥ `files_pct` of the previously-reviewed files changed; OR ≥ `added_lines` net added lines since
-the last review.
+**JS prefilter (cheap, deterministic):** compare the current PR's changed-file count + added-line
+count against the **`reviewed_file_count`** recorded in the review-state marker (§7). Flag as
+significant if **any of**: a file added or removed; OR ≥ `2 × added_lines` net added lines (a large
+in-place rewrite of the same files); OR ≥ `files_pct` of the previously-reviewed files changed **and**
+≥ `added_lines` net added lines since the last review. (The marker also stores `reviewed_head_sha` —
+the real head commit SHA — for audit/traceability; the prefilter itself compares file/line counts,
+not SHAs.)
 **Agent confirm (sonnet):** only for cases **near** the thresholds (within `borderline`), an agent
 judges whether the change is substantive enough to warrant a fresh holistic pass. Clear-cut
 cases skip the agent.

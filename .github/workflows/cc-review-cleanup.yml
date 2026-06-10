@@ -16,6 +16,9 @@ permissions:
 jobs:
   delete-log-branch:
     runs-on: ubuntu-latest
+    # Skip fork PRs: their close events can't see repo secrets, so the App-token step would hard-fail
+    # (a red X on every fork PR close). Same-repo PR closes still clean up their log branch.
+    if: github.event.pull_request.head.repo.fork == false
     steps:
       - name: Generate GitHub App token
         id: app-token

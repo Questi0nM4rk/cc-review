@@ -136,7 +136,7 @@ interface NormThread {
 
 const gh = {
   context(repo: string, pr: string) {
-    const meta = run("gh", ["pr", "view", pr, "--repo", repo, "--json", "title,body,author,baseRefName,headRefName"]);
+    const meta = run("gh", ["pr", "view", pr, "--repo", repo, "--json", "title,body,author,baseRefName,headRefName,headRefOid"]);
     if (meta.code !== 0) die("gh pr view failed", meta.stderr);
     const m = JSON.parse(meta.stdout);
     let diff = prefetchedDiff();
@@ -146,7 +146,9 @@ const gh = {
     }
     return {
       platform: "github", repo, pr_number: Number(pr),
-      base: m.baseRefName, head: m.headRefName, title: m.title,
+      // `head` is the real head COMMIT SHA (headRefOid), not the branch name — the brain stamps it
+      // into the review-state marker, and a SHA is what identifies "what was last reviewed".
+      base: m.baseRefName, head: m.headRefOid ?? m.headRefName, title: m.title,
       body: m.body ?? "", author: m.author?.login ?? "",
       diff,
     };
@@ -224,10 +226,27 @@ const gh = {
         }
       }
     }
-    const body = { event: payload.event, body: payload.body ?? "", comments: payload.comments ?? [] };
+    const comments = payload.comments ?? [];
+    const body = { event: payload.event, body: payload.body ?? "", comments };
     const r = run("gh", ["api", `repos/${repo}/pulls/${pr}/reviews`, "--method", "POST", "--input", "-"], JSON.stringify(body));
-    if (r.code !== 0) die("gh post-review failed", r.stderr);
-    return { posted: true, event: payload.event };
+    if (r.code === 0) return { posted: true, event: payload.event };
+
+    // The review is one ATOMIC POST: a single inline comment whose `line` isn't part of the diff
+    // (an agent mis-routed the line, hunk-context vs. exact added line) makes GitHub 422 and rejects
+    // the WHOLE review — every finding lost. If that happens, don't lose the review: demote ALL
+    // inline comments into the summary body as bullets and re-POST with no inline comments. The
+    // verdict (event) is preserved. (docs/github-review-api.md "Common 422 causes".)
+    const looksLikeLineError = comments.length > 0 &&
+      /422|line must be part of the diff|must be on a line in the diff|Unprocessable/i.test(r.stderr);
+    if (looksLikeLineError) {
+      const bullets = comments.map((c: { path: string; line: number; body: string }) => `- **\`${c.path}:${c.line}\`** — ${c.body}`).join("\n");
+      const demotedText = `${payload.body ?? ""}\n\n### Inline comments that could not be positioned in the diff\n\n${bullets}`;
+      const retry = run("gh", ["api", `repos/${repo}/pulls/${pr}/reviews`, "--method", "POST", "--input", "-"],
+        JSON.stringify({ event: payload.event, body: demotedText, comments: [] }));
+      if (retry.code === 0) return { posted: true, event: payload.event, inline_demoted: comments.length };
+      die("gh post-review failed (inline-demotion retry also failed)", retry.stderr);
+    }
+    die("gh post-review failed", r.stderr);
   },
 
   resolve(threadId: string) {
@@ -271,7 +290,9 @@ const gl = {
     }
     return {
       platform: "gitlab", repo, pr_number: Number(iid),
-      base: m.target_branch, head: m.source_branch, title: m.title,
+      // `head` is the real head COMMIT SHA (diff_refs.head_sha, falling back to the MR `sha`), not
+      // the source branch name — the brain stamps it into the review-state marker.
+      base: m.target_branch, head: m.diff_refs?.head_sha ?? m.sha ?? m.source_branch, title: m.title,
       body: m.description ?? "", author: m.author?.username ?? "",
       diff,
     };
