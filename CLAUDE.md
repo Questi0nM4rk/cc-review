@@ -9,6 +9,7 @@ open TODOs.
 ## Layout
 
 - `.claude/workflows/strict-review.mjs` — the brain: the entire review pipeline as one Workflow script (phases below).
+- `.claude/workflows/backfill-memory.mjs` — learning-loop Phase 3 cold-start primer (sibling Workflow). On a repo's **first-ever** review, harvests the last N merged PRs (one agent each) and synthesizes **additive** priors (conventions, recurring-issue themes, culture notes) into the memory slice. **Additive-only** — never writes `known-patterns.md` / suppression rules (a wrong suppression silences true findings). Sentinel-gated by `.cc-memory/.backfilled`; `ci-run.sh` invokes it before the review.
 - `scripts/review-platform.ts` — platform adapter: `detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply` (GitHub via `gh`, GitLab local).
 - `scripts/analysis-tools.ts` — semgrep/lizard runner used by the gather phase.
 - `scripts/run-local.sh` — local DRY-RUN harness (lays down `/tmp` scaffolding, runs the brain via `claude -p`, `post=false` always — never touches a real PR/MR).

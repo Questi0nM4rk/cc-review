@@ -50,6 +50,11 @@ if git -C "$CC_REVIEW_BOT_DIR" fetch origin claude-reviewer/memory 2>/dev/null; 
   git -C "$CC_REVIEW_BOT_DIR" archive FETCH_HEAD "${REPO}/" 2>/dev/null \
     | tar -x -C .cc-memory --strip-components=2 2>/dev/null || true
 fi
+# Phase-3 cold-start gate: a slice with no `.backfilled` sentinel has never been primed. Decide NOW,
+# while .cc-memory reflects ONLY the fetched slice — the placeholder MEMORY.md write on the next line
+# would otherwise mask an empty slice and this gate could never fire. Repos that predate backfill have
+# no sentinel, so they get primed once on their next review. (Actual run happens after install, 3a.)
+BACKFILL_NEEDED=0; [ -f .cc-memory/.backfilled ] || BACKFILL_NEEDED=1
 [ -f .cc-memory/MEMORY.md ] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > .cc-memory/MEMORY.md
 mkdir -p .cc-memory/learnings ".cc-memory/pr-${PR_NUMBER}"
 
@@ -67,6 +72,37 @@ curl -fsSL -o /tmp/gitleaks.tgz \
 echo "${GL_SHA}  /tmp/gitleaks.tgz" | sha256sum -c -
 tar -xzf /tmp/gitleaks.tgz -C "$HOME/.local/bin" gitleaks
 "$HOME/.local/bin/gitleaks" version
+
+# ── 3a) Cold-start backfill — prime the memory slice on a repo's first-ever review ──────────
+# Learn ADDITIVE priors (conventions, recurring-issue themes, review culture) from recent merged PRs
+# so the first review isn't cold. Sentinel-gated → runs at most once per repo. Best-effort: a failure
+# leaves the repo to review cold (the prior baseline) and the sentinel unwritten, so it retries next
+# run. It never posts and never writes suppression rules. The synth agent writes .cc-memory/.backfilled
+# LAST (proof of completion); push_mem ships it with the slice. Tunable via BACKFILL_N (default 5).
+if [ "$BACKFILL_NEEDED" = "1" ]; then
+  BACKFILL_N="${BACKFILL_N:-5}"
+  BF_PRS=$(gh pr list --repo "$REPO" --state merged --limit "$BACKFILL_N" --json number --jq '[.[].number]' 2>/dev/null || echo "[]")
+  # Only proceed on a real non-empty JSON array — a gh/jq hiccup can yield "", "null", or a stray
+  # string; validating here keeps a malformed value out of the agent prompt (and out of the log line).
+  if printf '%s' "$BF_PRS" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
+    echo "backfill: priming memory for ${REPO} from merged PRs ${BF_PRS}"
+    BF_PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/backfill-memory.mjs' and args { bot_dir: '${CC_REVIEW_BOT_DIR}', repo: '${REPO}', prs: ${BF_PRS} }. Run it to completion and report its return value verbatim as JSON."
+    claude -p "$BF_PROMPT" \
+      --model claude-sonnet-4-6 \
+      --output-format stream-json --verbose \
+      --allowedTools "Workflow,Bash(gh:*),Bash(git:*),Bash(tsx:*),Bash(node:*),Bash(cat:*),Read,Grep,Glob" \
+      --dangerously-skip-permissions \
+      --add-dir "$CC_REVIEW_BOT_DIR" --add-dir /tmp \
+      | tee /tmp/run/backfill.jsonl || true
+    # Best-effort, but a SILENT backfill failure must not masquerade as a clean review failure: if it
+    # produced no result object it likely hit a usage/quota limit, which would then also kill the
+    # review below — surface it so the root cause isn't a diagnostic black hole (cf. #51).
+    [ -z "$(jq -c 'select(.type=="result")' /tmp/run/backfill.jsonl 2>/dev/null | tail -1)" ] \
+      && echo "::warning::cc-review backfill did not complete cleanly (possible usage/quota limit); proceeding to review without primed memory"
+  else
+    echo "backfill: no merged PRs to learn from (or gh list failed) — skipping; will retry next run"
+  fi
+fi
 
 # ── 3) Run the strict-review workflow (headless) ────────────────────────────
 # Sub-agents do NOT inherit env vars — pass inputs via a file.

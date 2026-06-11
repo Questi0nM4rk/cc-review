@@ -164,6 +164,14 @@ sample-aware* signal, computed deterministically before it reaches any prompt.
 ### Phase 3 — Cold-start backfill from recent PRs (warm start) · [RC] · M
 A new repo's first review should start with priors, not cold. **Ship this first — it's independent,
 pure [RC], learns from *humans* (high-quality signal), and pays off on the very first review.**
+
+> **Status (2026-06-11): v1 SHIPPED.** `.claude/workflows/backfill-memory.mjs` + the `ci-run.sh`
+> sentinel gate are live. v1 writes **additive-only** priors (conventions, recurring-issue themes,
+> culture notes) → `MEMORY.md` + `learnings/{lessons,found-issues}.md`, idempotency via the
+> `.cc-memory/.backfilled` sentinel. **Deliberately deferred to v2:** code-verified `known_patterns`
+> from human dismissals (the suppressive part — needs the re-verification gate below before it's safe).
+> So the "≥1 code-verified known_pattern" acceptance criterion is **not yet met** — v1 intentionally
+> trades it away for a safe, simple first cut.
 - **New [RC] `backfill-memory` step:** fetch last **N=5** (configurable) merged PRs
   (`gh pr list --state merged --limit 5`); per PR read diff + review threads + resolutions + follow-up
   commits; an agent synthesizes into the slice: conventions, recurring issues, **code-verified**

@@ -197,6 +197,19 @@ status into standing themes, dropping superseded entries), with a rough ~25-bull
 **never drops a still-valid `known_pattern`** (that would cause re-flagging). Memory is read back into
 every review (gather phase) — the project treats it as load-bearing, not disposable.
 
+**Cold-start backfill (learning-loop Phase 3, `.claude/workflows/backfill-memory.mjs`).** On a repo's
+**first-ever** review the slice is empty, so `ci-run.sh` invokes the backfill workflow *before* the
+review: it harvests the last `N` merged PRs (default 5, `BACKFILL_N`; one agent per PR) and synthesises
+**additive** priors — conventions, recurring-issue themes, review-culture notes — into `MEMORY.md` +
+`learnings/{lessons,found-issues}.md`, so the first review isn't cold. It is **additive-only**: it
+**never** writes `known-patterns.md` or any suppression rule, because a wrong suppression silences true
+findings with no backstop (code-verified backfilled `known_patterns` are deferred to a later phase).
+Idempotency: the synth agent writes a `.cc-memory/.backfilled` sentinel **last** (proof of completion);
+`ci-run.sh` decides "needs backfill" by that sentinel's absence in the fetched slice — checked **before**
+the placeholder `MEMORY.md` write, which would otherwise mask an empty slice. Best-effort: a failed/
+incomplete backfill leaves the sentinel unwritten (reviews cold — the prior baseline) and retries next
+run. It never posts.
+
 ---
 
 ## 8. Squad selection (`pickSquad`, deterministic)
