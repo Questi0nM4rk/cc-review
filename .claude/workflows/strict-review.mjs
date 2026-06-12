@@ -287,6 +287,15 @@ const markerPrompt = (prNumber, head_sha, fileCount) =>
   `  cat > ${MEM}/pr-${prNumber}/review-state.json <<'EOF'\n${JSON.stringify({ reviewed_head_sha: head_sha, reviewed_file_count: fileCount }, null, 2)}\nEOF\n` +
   `If the dir does not exist (local mode), say 'no marker dir (local mode)' and do nothing. Confirm in one line.`;
 
+// Phase-0 instrumentation log: APPEND one JSONL row per posted inline finding (run OUTPUT, not learned
+// memory) so a later phase can record each finding's fate at merge. Append (cat >>), never overwrite —
+// re-runs add only their new findings, so the file accumulates the union across runs. The rows are
+// pre-serialized; the heredoc body + EOF terminator MUST sit at column 0 (an indented EOF never closes).
+const findingsLogPrompt = (prNumber, rows) =>
+  `Append the per-finding instrumentation log (run OUTPUT, not learned memory). The dir ${MEM}/pr-${prNumber} already exists. Using a cat-heredoc ONLY (no mkdir/printf/tee/Write/Edit), APPEND the lines below VERBATIM to ${MEM}/pr-${prNumber}/findings.jsonl (one JSON object per line; create the file if absent, never overwrite existing lines). Copy the heredoc EXACTLY — the body lines and the EOF terminator are at column 0 (no leading spaces):\n` +
+  `cat >> ${MEM}/pr-${prNumber}/findings.jsonl <<'EOF'\n${rows.map((r) => JSON.stringify(r)).join("\n")}\nEOF\n` +
+  `If the dir does not exist (local mode), say 'no marker dir (local mode)' and do nothing. Confirm in one line.`;
+
 const memoryPrompt = (ctx) =>
   `Maintain durable project-review memory under ./${MEM} — a directory in your CURRENT working directory you ARE allowed to write to (the GHA stages it; the sandbox blocks /tmp). First run 'cat ${MEM}/MEMORY.md': if it errors, ${MEM} is absent (local dry-run) — do nothing and say 'no memory dir (local mode)'. If it succeeds you are in bot mode and MUST curate it.\n` +
   `CURATE this memory, do not just pile onto it. For EACH file below: first 'cat' it, THEN choose per file:\n` +
@@ -455,22 +464,59 @@ function dedup(findings) {
   return [...m.values()];
 }
 
-function stampHash(obj) {
-  const s = JSON.stringify(obj);
+// FNV-1a 32-bit. Extracted so stampHash (review-integrity marker) and findingId (per-finding id)
+// share one implementation; stampHash's output is unchanged (`fnv1a32:` + 8 hex).
+function fnv1a32(s) {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
-  return `fnv1a32:${h.toString(16).padStart(8, "0")}`;
+  return h.toString(16).padStart(8, "0");
+}
+
+function stampHash(obj) { return `fnv1a32:${fnv1a32(JSON.stringify(obj))}`; }
+
+// A STABLE, line-independent identity for a finding (learning-loop Phase 0). It correlates a posted
+// inline comment — which carries `<!-- cc-review:finding <id> -->` — back to a findings.jsonl row, so
+// a later phase can record the finding's fate at merge. Line is DELIBERATELY excluded: lines drift
+// across re-runs (the codebase already concedes this — dropAlreadyThreaded uses a ±5-line window,
+// dedup a description-prefix overlap). The signature is the first N normalized tokens of the
+// description, so re-wording past token N doesn't fork the id. Correlation is fuzzy by design.
+const FINDING_ID_TOKENS = 10;
+function normalizeForId(description) {
+  return String(description || "")
+    .toLowerCase()
+    .replace(/^\s*verify\s*[—–-]\s*/i, "")  // drop the 'Verify — ' uncertainty prefix so it can't fork the id
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, FINDING_ID_TOKENS)
+    .join(" ");
+}
+function findingId(file, description) {
+  return fnv1a32(JSON.stringify([file, normalizeForId(description)]));
+}
+
+// Which kept findings become inline review comments (resolvable threads) vs summary-body bullets.
+// Single source of truth shared by buildPayload (the marker) and the findings.jsonl row builder, so
+// the two never drift on "which findings are threaded".
+function inlineFindings(kept) {
+  return kept.filter((e) => e && e.original && e.original.in_diff && e.verdict !== "reframe-higher");
 }
 
 function buildPayload(kept, event) {
+  const inline = new Set(inlineFindings(kept));
   const comments = [], body = [];
   for (const e of kept) {
     const f = e.original;
     const isReframe = e.verdict === "reframe-higher";
     let d = f.description;
     if (isReframe && e.reframe_note) d = `${d} (reframe: ${e.reframe_note})`;
-    if (f.in_diff && !isReframe) comments.push({ path: f.file, line: f.line, side: "RIGHT", body: d });
-    else body.push(`- **\`${f.file}:${f.line}\`** — ${d}`);
+    if (inline.has(e)) {
+      // Hidden per-finding marker: correlates this posted comment (→ its review thread) back to a
+      // findings.jsonl row by id. Invisible in rendered markdown; computed from the SAME (file,
+      // description) the row builder uses, so marker id == row id within a run.
+      comments.push({ path: f.file, line: f.line, side: "RIGHT", body: `${d}\n\n<!-- cc-review:finding ${findingId(f.file, f.description)} -->` });
+    } else body.push(`- **\`${f.file}:${f.line}\`** — ${d}`);
   }
   const text = event === "APPROVE" ? "No outstanding findings. All prior threads resolved." : `## Strict review\n\n${body.length ? `### Issues outside the diff\n\n${body.join("\n")}\n\n` : ""}Inline comments mark required changes. Requesting changes until every thread is resolved.`;
   const p = { event, body: text, comments };
@@ -650,13 +696,21 @@ async function runDeepReview(difficulty, category, overviewBrief, doGather, high
   log(`squad: ${opusModel}=[${squad.opus.join(",")}] sonnet=[${squad.sonnet.join(",")}]`);
   phase("Squad");
   const partition = (d) => observations.filter((o) => normalizeDomain(o.suggested_domain) === d);
+  // Each task returns { domain, findings } so the producing domain rides along with every finding —
+  // it's recorded in findings.jsonl (Phase 0) for per-domain calibration later. The domain is carried
+  // in JS, NOT through the check agent (which reconstructs 'original' and would drop a non-schema field).
   const tasks = [
-    ...squad.opus.map((d) => () => agent(reviewPrompt(d, "deep", diff, category, partition(d), langs, toolFindings, projectContext, overviewBrief), { schema: FINDINGS_SCHEMA, model: opusModel, effort: opusModel === "opus" ? "xhigh" : undefined, label: `review:${d}(${opusModel})`, phase: "Squad" })),
-    ...squad.sonnet.map((d) => () => agent(reviewPrompt(d, "standard", diff, category, partition(d), langs, toolFindings, projectContext, overviewBrief), { schema: FINDINGS_SCHEMA, model: "sonnet", label: `review:${d}`, phase: "Squad" })),
+    ...squad.opus.map((d) => () => agent(reviewPrompt(d, "deep", diff, category, partition(d), langs, toolFindings, projectContext, overviewBrief), { schema: FINDINGS_SCHEMA, model: opusModel, effort: opusModel === "opus" ? "xhigh" : undefined, label: `review:${d}(${opusModel})`, phase: "Squad" }).then((r) => ({ domain: d, findings: r?.findings || [] }))),
+    ...squad.sonnet.map((d) => () => agent(reviewPrompt(d, "standard", diff, category, partition(d), langs, toolFindings, projectContext, overviewBrief), { schema: FINDINGS_SCHEMA, model: "sonnet", label: `review:${d}`, phase: "Squad" }).then((r) => ({ domain: d, findings: r?.findings || [] }))),
   ];
   const batches = (await parallel(tasks)).filter(Boolean);
-  let deduped = dedup(batches.flatMap((b) => b.findings || []));
+  let deduped = dedup(batches.flatMap((b) => (b.findings || []).map((f) => ({ ...f, domain: b.domain }))));
   log(`findings: ${deduped.length} after dedup`);
+
+  // id -> domain, built pre-check (the only place domain is reliably known). Keyed by the same
+  // findingId the marker/row builder uses, so Post can recover a finding's domain by its id.
+  const idToDomain = new Map();
+  for (const f of deduped) idToDomain.set(findingId(f.file, f.description), f.domain || "unknown");
 
   let kept = [], falsePositives = [];
   if (deduped.length) {
@@ -670,11 +724,11 @@ async function runDeepReview(difficulty, category, overviewBrief, doGather, high
     falsePositives = graded.filter((g) => g.verdict === "false-positive");
     kept = graded.filter((g) => g.verdict === "confirmed" || g.verdict === "reframe-higher");
   }
-  return { kept, falsePositives, projectContext, memKnown };
+  return { kept, falsePositives, projectContext, memKnown, idToDomain };
 }
 
 // ---- Path branch ------------------------------------------------------------
-let kept = [], falsePositives = [], memKnown = [];
+let kept = [], falsePositives = [], memKnown = [], idToDomain = new Map();
 let overviewMd = "";
 let difficulty = 3, category = "other";
 let threadActions = [], resolveIds = [], replies = [], knownPatterns = [], stillOpen = priorThreads.length;
@@ -694,7 +748,7 @@ if (!isRerun) {
   if (post) await agent(overviewWritePrompt(prNumber, overviewMd, null), { model: "sonnet", label: "post-overview", phase: "Holistic" });
 
   const res = await runDeepReview(difficulty, category, sanitizeContext(overviewMd, 700), difficultyPath(difficulty).gather, fl.risk);
-  kept = res.kept; falsePositives = res.falsePositives; memKnown = res.memKnown;
+  kept = res.kept; falsePositives = res.falsePositives; memKnown = res.memKnown; idToDomain = res.idToDomain;
   reviewed = true;
 } else {
   // ---- RE-RUN -------------------------------------------------------------
@@ -745,7 +799,7 @@ if (!isRerun) {
 
   // A review ALWAYS runs on a re-run (the "simple review"); fresh web research only when significant.
   const res = await runDeepReview(difficulty, category, sanitizeContext(overviewMd, 700), significant, fl.risk);
-  kept = res.kept; falsePositives = res.falsePositives; memKnown = res.memKnown;
+  kept = res.kept; falsePositives = res.falsePositives; memKnown = res.memKnown; idToDomain = res.idToDomain;
   reviewed = true;
 }
 
@@ -764,6 +818,16 @@ log(`decision: ${event} (${kept.length} new findings, ${stillOpen} threads open)
 const payload = buildPayload(kept, event);
 const allKnown = [...knownPatterns, ...memKnown];
 
+// Phase-0 instrumentation: one row per posted INLINE finding (the ones that become resolvable
+// threads), each id matching the hidden `cc-review:finding` marker buildPayload embedded. A later
+// phase reads this + the thread state at merge to record each finding's fate. Computed from the
+// SAME (file, description) as the markers, so ids line up. (No posted_at: the workflow runtime can't
+// timestamp — recency is recorded runner-side at harvest time.)
+const findingRows = inlineFindings(kept).map((e) => {
+  const id = findingId(e.original.file, e.original.description);
+  return { id, file: e.original.file, line: e.original.line, domain: idToDomain.get(id) || "unknown", event, posted_head_sha: headSha };
+});
+
 // ---- Post (only on explicit opt-in) ----------------------------------------
 let posted = null;
 if (post) {
@@ -775,6 +839,9 @@ if (post) {
   // re-run. The old write was mis-gated behind gather, so it skipped difficulty-1 first
   // reviews and minor re-runs, leaving the sig-change baseline stale.
   await agent(markerPrompt(prNumber, headSha, files.length), { model: "sonnet", label: "review-state", phase: "Post" });
+  // Append the per-finding instrumentation log (Phase 0). Only when there are inline findings —
+  // APPROVE runs and out-of-diff-only runs leave it untouched.
+  if (findingRows.length) await agent(findingsLogPrompt(prNumber, findingRows), { model: "sonnet", label: "findings-log", phase: "Post" });
 }
 
 // ---- Memory -----------------------------------------------------------------

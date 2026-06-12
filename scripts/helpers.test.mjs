@@ -25,6 +25,7 @@ const EXPORTS = [
   "langsForDiff", "globToRe", "applyIgnorePaths", "mergeLangs", "buildProjectContext",
   "normalizeDomain", "relevanceScores", "pickSquad", "dedup", "stampHash",
   "buildPayload", "difficultyPath", "difficultyFloor", "fixMermaid", "sigChangePrefilter", "resolveSig",
+  "fnv1a32", "normalizeForId", "findingId", "inlineFindings",
 ];
 
 const raw = readFileSync(BRAIN, "utf8");
@@ -317,6 +318,63 @@ test("buildPayload embeds the integrity hash as a review marker (idempotency key
     { verdict: "confirmed", original: { file: "a.ts", line: 6, description: "Other", in_diff: true } },
   ], "REQUEST_CHANGES");
   assert.notEqual(p2._integrity, p1._integrity);
+});
+
+// ---------------------------------------------------------------------------
+// findingId / fnv1a32 / normalizeForId / inlineFindings  (Phase 0 instrumentation)
+// ---------------------------------------------------------------------------
+test("fnv1a32 is deterministic, 8 lowercase hex, content-sensitive", () => {
+  assert.match(H.fnv1a32("hello"), /^[0-9a-f]{8}$/);
+  assert.equal(H.fnv1a32("hello"), H.fnv1a32("hello"));
+  assert.notEqual(H.fnv1a32("hello"), H.fnv1a32("hellp"));
+  assert.equal(H.fnv1a32(""), "811c9dc5"); // FNV-1a offset basis, empty input
+});
+
+test("stampHash keeps its fnv1a32: prefix after the extraction (output unchanged)", () => {
+  assert.match(H.stampHash({ a: 1 }), /^fnv1a32:[0-9a-f]{8}$/);
+});
+
+test("normalizeForId lowercases, strips the 'Verify —' prefix, collapses, caps at N tokens", () => {
+  assert.equal(H.normalizeForId("Verify — Remove the Unused Import Statement"), "remove the unused import statement");
+  assert.equal(H.normalizeForId("N+1 query in the loop!"), "n 1 query in the loop");
+  // capped at 10 tokens: trailing words past token 10 are dropped
+  assert.equal(H.normalizeForId("one two three four five six seven eight nine ten eleven twelve"),
+    "one two three four five six seven eight nine ten");
+});
+
+test("findingId is stable, line-independent, file-sensitive, and tolerant of trailing re-wording", () => {
+  const a = H.findingId("src/a.ts", "Remove the unused import");
+  // same file + same opening words -> same id regardless of casing / punctuation / 'Verify —' prefix
+  assert.equal(a, H.findingId("src/a.ts", "remove the unused import."));
+  assert.equal(a, H.findingId("src/a.ts", "Verify — Remove the unused import"));
+  // different file -> different id (id is file + description)
+  assert.notEqual(a, H.findingId("src/b.ts", "Remove the unused import"));
+  // re-wording PAST the 10-token signature does NOT fork the id (stability across re-runs)
+  const long1 = "guard the new query path with a regression test covering the empty case";
+  const long2 = "guard the new query path with a regression test covering the populated case";
+  assert.equal(H.findingId("q.ts", long1), H.findingId("q.ts", long2));
+  assert.match(a, /^[0-9a-f]{8}$/);
+});
+
+test("buildPayload embeds a per-finding marker whose id == findingId(file, description)", () => {
+  const p = H.buildPayload([
+    { verdict: "confirmed", original: { file: "a.ts", line: 5, description: "Fix the thing", in_diff: true } },
+  ], "REQUEST_CHANGES");
+  const id = H.findingId("a.ts", "Fix the thing");
+  assert.equal(p.comments.length, 1);
+  assert.ok(p.comments[0].body.includes(`<!-- cc-review:finding ${id} -->`), "inline comment carries its finding marker");
+  assert.ok(p.comments[0].body.startsWith("Fix the thing"), "the human-facing text comes first, marker appended");
+});
+
+test("inlineFindings selects only in-diff, non-reframe findings (the threaded ones)", () => {
+  const kept = [
+    { verdict: "confirmed", original: { file: "a.ts", line: 1, description: "x", in_diff: true } },
+    { verdict: "confirmed", original: { file: "b.ts", line: 2, description: "y", in_diff: false } },
+    { verdict: "reframe-higher", original: { file: "c.ts", line: 3, description: "z", in_diff: true } },
+  ];
+  const inline = H.inlineFindings(kept);
+  assert.equal(inline.length, 1);
+  assert.equal(inline[0].original.file, "a.ts");
 });
 
 // ---------------------------------------------------------------------------

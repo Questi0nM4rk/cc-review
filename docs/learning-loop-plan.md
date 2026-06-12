@@ -62,6 +62,15 @@ deterministic verdict gate behind it the way there is in the live review path (`
 so an injection or a merely-wrong old comment poisons the signal directly.
 
 ### Phase 0 — Instrument findings (foundation) · [RC] · S→M
+
+> **Status (2026-06-12): SHIPPED.** `findingId` + the `<!-- cc-review:finding <id> -->` per-inline-comment
+> marker + `pr-<N>/findings.jsonl` are live in the brain. **As-built deviations** (forced by real
+> constraints, faithful to the §6 corrections): `findings.JSONL` (append via `cat >>`) not a `.json`
+> array — the cat-heredoc rules out a read-merge-rewrite; **no `posted_at`** — the Workflow runtime
+> can't `Date.now()`, recency lives in Phase 1's runner-side `outcomes.jsonl`; only **threaded
+> (inline)** findings are logged (1:1 with markers + threads). `findingId` excludes line and uses the
+> first 10 normalized description tokens; `JSON.stringify([file, sig])` key is injective.
+
 Make every posted finding addressable. **There is no per-finding id today** — `stampHash()`
 (`strict-review.mjs:458`) is one digest over the *whole* payload, stamped as a single
 `<!-- cc-review:review <hash> -->` marker on the summary body for whole-review dedup; inline comments

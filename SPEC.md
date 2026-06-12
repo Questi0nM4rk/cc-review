@@ -176,6 +176,15 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   **not** review context and is never fed back to a reviewer. (Gather observations are deliberately
   **not** persisted — an earlier "research cache" stored them but nothing ever read them back, so it
   was dropped.)
+- **Per-finding instrumentation log** (learning-loop Phase 0) — `<owner>/<repo>/pr-<N>/findings.jsonl`,
+  appended on every posted review: one row `{id, file, line, domain, event, posted_head_sha}` per
+  posted **inline** finding. `id = fnv1a32(JSON.stringify([file, normalized-description]))` (line
+  EXCLUDED — lines drift; first 10 description tokens, so minor re-wording doesn't fork it), and each
+  posted inline comment carries a hidden `<!-- cc-review:finding <id> -->` marker so a later phase can
+  correlate the comment (→ its review thread) back to its row. Append-only (`cat >>`), so it
+  accumulates the union across re-runs (`dropAlreadyThreaded` suppresses re-posts). Run OUTPUT, not
+  review context. No `posted_at` — the workflow runtime can't timestamp; recency is recorded
+  runner-side when outcomes are harvested.
 - **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on
   re-runs. It is the **primary** first-vs-re-run signal, but **not the only one**: if a user deletes
   it, the review-state marker still proves the PR was reviewed, so the bot takes the re-run path
