@@ -194,6 +194,12 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   carries the id). **Deterministic** (no LLM reads comment text — an injected old comment can't steer a
   verdict) and **idempotent** (a re-harvest replaces a PR's rows by `id+pr`; trimmed to a rolling
   window). The slice fetch/push is shared with the review pipeline via `scripts/memory-slice.sh`.
+  **Read back (learning-loop Phase 2):** the gather `memDocs` agent loads these rows and the brain
+  computes per-domain **calibration** from them (Laplace-smoothed rates, min-sample gate `n≥8`,
+  `gone`/unknown excluded) — injected as a visible block into `projectContext` (→ squad + check). The
+  signal is asymmetric (`fixed` acts at a lower bar than `ignored`) and floored (it never instructs
+  silence; the check still confirms every provable finding). This is the loop closing: outcomes →
+  calibration → next review.
 - **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on
   re-runs. It is the **primary** first-vs-re-run signal, but **not the only one**: if a user deletes
   it, the review-state marker still proves the PR was reviewed, so the bot takes the re-run path

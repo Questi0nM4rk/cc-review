@@ -25,7 +25,7 @@ const EXPORTS = [
   "langsForDiff", "globToRe", "applyIgnorePaths", "mergeLangs", "buildProjectContext",
   "normalizeDomain", "relevanceScores", "pickSquad", "dedup", "stampHash",
   "buildPayload", "difficultyPath", "difficultyFloor", "fixMermaid", "sigChangePrefilter", "resolveSig",
-  "fnv1a32", "normalizeForId", "findingId", "inlineFindings",
+  "fnv1a32", "normalizeForId", "findingId", "inlineFindings", "computeCalibration",
 ];
 
 const raw = readFileSync(BRAIN, "utf8");
@@ -375,6 +375,83 @@ test("inlineFindings selects only in-diff, non-reframe findings (the threaded on
   const inline = H.inlineFindings(kept);
   assert.equal(inline.length, 1);
   assert.equal(inline[0].original.file, "a.ts");
+});
+
+// ---------------------------------------------------------------------------
+// computeCalibration / buildProjectContext calibration block  (Phase 2)
+// ---------------------------------------------------------------------------
+const rows = (domain, verdict, n) => Array.from({ length: n }, () => ({ domain, verdict }));
+
+test("computeCalibration: a domain below the min-sample gate emits NO line", () => {
+  assert.deepEqual(H.computeCalibration(rows("performance", "ignored", 7)), []); // 7 < minOutcomes(8)
+});
+test("computeCalibration: high fixed-rate -> 'keep flagging' (the safe positive)", () => {
+  const lines = H.computeCalibration(rows("security", "fixed", 8));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /security:/);
+  assert.match(lines[0], /keep flagging/);
+});
+test("computeCalibration: high ignored-rate -> a FLOORED nudge that never says stop/suppress", () => {
+  const lines = H.computeCalibration(rows("performance", "ignored", 8));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /higher bar/);
+  assert.match(lines[0], /still flag any issue you can prove/);
+  assert.doesNotMatch(lines[0], /stop|suppress|skip|ignore this domain/i); // calibration can't silence a domain
+});
+test("computeCalibration: 'gone' rows carry no signal (excluded from the denominator)", () => {
+  // 20 'gone' + 4 'ignored' -> scored = 4 < gate -> no line (gone must not pad the sample to the gate)
+  assert.deepEqual(H.computeCalibration([...rows("api", "gone", 20), ...rows("api", "ignored", 4)]), []);
+});
+test("computeCalibration: 'open-but-acted' dilutes the ignored-rate below threshold (the floor at work)", () => {
+  // 4 ignored + 4 open-but-acted = scored 8, ignoredRate=(4+1)/(8+2)=0.5 < ignoredHigh(0.8) -> no nudge
+  const lines = H.computeCalibration([...rows("testing", "ignored", 4), ...rows("testing", "open-but-acted", 4)]);
+  assert.deepEqual(lines, []);
+});
+test("computeCalibration: a high-FIXED domain is never depressed (known-debt finding doesn't suppress)", () => {
+  // 7 fixed + 1 ignored: scored=8, fixedRate=(7+1)/(8+2)=0.8 >= fixedHigh(0.7) -> 'keep flagging', not a bar-raise
+  const lines = H.computeCalibration([...rows("security", "fixed", 7), ...rows("security", "ignored", 1)]);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /keep flagging/);
+});
+test("computeCalibration: ASYMMETRY — 6/8 fixed flags 'keep flagging' but 6/8 ignored stays silent", () => {
+  // fixed: (6+1)/(8+2)=0.7 >= fixedHigh(0.7) -> line
+  const fixedLines = H.computeCalibration([...rows("security", "fixed", 6), ...rows("security", "open-but-acted", 2)]);
+  assert.equal(fixedLines.length, 1);
+  assert.match(fixedLines[0], /keep flagging/);
+  // ignored: (6+1)/(8+2)=0.7 < ignoredHigh(0.8) -> NO line (the weak signal needs MORE evidence)
+  const ignoredLines = H.computeCalibration([...rows("performance", "ignored", 6), ...rows("performance", "open-but-acted", 2)]);
+  assert.deepEqual(ignoredLines, []);
+});
+test("computeCalibration: an unrecognized verdict carries no signal (not counted toward the sample)", () => {
+  assert.deepEqual(H.computeCalibration(rows("api", "noise", 10)), []); // hallucinated verdict -> scored 0
+  // …and it can't pad a real domain to the gate: 4 'ignored' + 6 'noise' -> scored 4 < 8 -> no line
+  assert.deepEqual(H.computeCalibration([...rows("api", "ignored", 4), ...rows("api", "noise", 6)]), []);
+});
+test("computeCalibration canonicalizes domain aliases so a split sample isn't silenced", () => {
+  // 'performance' (6) + 'perf' (2) are the SAME domain — merged they reach the gate (scored 8) and
+  // flag 'keep flagging'; un-normalized they'd be two sub-gate buckets emitting nothing.
+  const lines = H.computeCalibration([...rows("performance", "fixed", 6), ...rows("perf", "fixed", 2)]);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /performance:/);
+});
+test("computeCalibration drops non-domain keys ('unknown' / aliases that normalize to null)", () => {
+  assert.deepEqual(H.computeCalibration(rows("unknown", "fixed", 10)), []); // harvester placeholder -> null -> dropped
+});
+test("computeCalibration tolerates malformed/empty input without throwing", () => {
+  assert.deepEqual(H.computeCalibration([]), []);
+  assert.deepEqual(H.computeCalibration(null), []);
+  assert.deepEqual(H.computeCalibration([{}, { domain: "x" }, { verdict: "fixed" }, null]), []);
+});
+test("buildProjectContext injects the calibration block (visible + floored) only when a line exists", () => {
+  const withCalib = H.buildProjectContext({}, [], [], rows("security", "fixed", 8));
+  assert.match(withCalib, /Calibration from this repo's recent merged-PR outcomes/);
+  assert.match(withCalib, /never withhold a provable issue/);
+  assert.match(withCalib, /keep flagging/);
+  // no outcomes (or sub-threshold) -> no calibration text at all
+  assert.doesNotMatch(H.buildProjectContext({}, [], [], []), /Calibration from/);
+  assert.doesNotMatch(H.buildProjectContext({}, [], [], rows("perf", "ignored", 3)), /Calibration from/);
+  // cold-start call shape: outcomes arg omitted entirely (undefined) must not throw or calibrate
+  assert.doesNotMatch(H.buildProjectContext({}, [], []), /Calibration from/);
 });
 
 // ---------------------------------------------------------------------------

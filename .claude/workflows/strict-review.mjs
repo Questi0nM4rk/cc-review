@@ -83,6 +83,21 @@ const LANG_BY_EXT = {
 // (within BORDERLINE of a threshold) get an agent confirm; clear-cut cases skip the agent.
 const SIG = { filesPct: 0.25, addedLines: 150, borderline: 0.2 };
 
+// Calibration thresholds (learning-loop Phase 2). minOutcomes is a MINIMUM-SAMPLE GATE: a domain emits
+// NO calibration line until it has this many scored outcomes (known verdicts only) in the window —
+// below it, the rate is noise and we stay silent. fixedHigh/ignoredHigh are the (Laplace-smoothed) rate
+// thresholds. The signal is ASYMMETRIC by design: `fixed`/`dismissed` are CODE-VERIFIED ground truth, so
+// acting on them ("keep flagging") is safe at a LOWER bar; `ignored` is a friction-contaminated WEAK
+// prior (the author merged without engaging — maybe noise, maybe just busy), so nudging skepticism up
+// must demand MORE evidence → ignoredHigh > fixedHigh. The ignored nudge is also FLOORED: it only ever
+// says "a slightly higher bar — still flag what you can prove"; calibration can never instruct silence,
+// and the check pass still confirms every provable finding regardless of framing. The rolling window is
+// Phase 1's 180-day trim of outcomes.jsonl, not in-brain time-decay (the workflow runtime has no clock).
+const CALIB = { minOutcomes: 8, fixedHigh: 0.7, ignoredHigh: 0.8 };
+// Outcome verdicts that count toward a domain's sample. 'gone' (no thread) and any unrecognized verdict
+// (an LLM paraphrase) are EXCLUDED — they carry no signal and must not pad the sample to the gate.
+const CALIB_SCORED = new Set(["fixed", "dismissed", "ignored", "open-but-acted"]);
+
 // ============================================================================
 // SCHEMAS
 // ============================================================================
@@ -152,7 +167,13 @@ const RESEARCH_SCHEMA = {
 };
 const MEMDOCS_SCHEMA = {
   type: "object", required: ["notes"],
-  properties: { notes: { type: "array", items: { type: "string" } }, known_patterns: { type: "array", items: { type: "string" } } },
+  properties: {
+    notes: { type: "array", items: { type: "string" } },
+    known_patterns: { type: "array", items: { type: "string" } },
+    // Phase 2: the per-finding outcome rows from learnings/outcomes.jsonl, verbatim (domain+verdict) —
+    // the brain computes per-domain calibration from these in JS.
+    outcomes: { type: "array", items: { type: "object", required: ["domain", "verdict"], properties: { domain: { type: "string" }, verdict: { type: "string" } } } },
+  },
 };
 const TOOLS_SCHEMA = { type: "object", required: ["available", "findings"], properties: { available: { type: "array", items: { type: "string" } }, findings: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, file: { type: "string" }, line: { type: "integer" }, message: { type: "string" } } } } } };
 
@@ -232,7 +253,8 @@ const memDocsPrompt = (prNumber) =>
   `Gather PRIOR CONTEXT for the reviewers from two read-only sources (do not write anything):\n` +
   `1. This repo's review memory: cat ${MEM}/MEMORY.md and ${MEM}/learnings/*.md if they exist (ignore errors — absent in local mode).\n` +
   `2. The repo's own docs: list and skim ./docs if present (cat the most relevant files).\n` +
-  `Return: notes = concise factual context bullets the reviewers should know (conventions, prior recurring issues, architecture), and known_patterns = intentional patterns NOT to re-flag. Empty arrays if nothing. Keep each bullet under 200 chars.`;
+  `3. The outcome log: cat ${MEM}/learnings/outcomes.jsonl if it exists (it is .jsonl, NOT matched by *.md above). Each line is a JSON object; return one 'outcomes' entry per line with just its {domain, verdict} — verbatim, do NOT summarize, filter, or invent. Empty array if the file is absent.\n` +
+  `Return: notes = concise factual context bullets the reviewers should know (conventions, prior recurring issues, architecture); known_patterns = intentional patterns NOT to re-flag; outcomes = the rows from step 3. Empty arrays if nothing. Keep each bullet under 200 chars.`;
 
 const toolsPrompt = () =>
   `Run the analysis tool-runner from the repo root and return its JSON verbatim:\n  tsx ${TOOLS} --changed\nIt reports which tools were available and any findings. If the script is missing or no tools are installed, return {"available":[],"findings":[]}.`;
@@ -411,12 +433,54 @@ function mergeLangs(fromFiles, configLangs) {
   for (const l of configLangs || []) { const k = String(l).toLowerCase(); const c = canon.has(k) ? k : alias[k]; if (c) s.add(c); }
   return [...s];
 }
-function buildProjectContext(config, memNotes, knownFromMem) {
+// Turn harvested per-finding outcomes (Phase 1) into per-domain calibration lines (Phase 2). Pure +
+// deterministic (no clock — the window is Phase 1's file trim). 'gone' rows carry no signal and are
+// excluded; 'open-but-acted' counts toward the denominator but neither numerator (the author engaged
+// but didn't fix — it dilutes both rates, conservatively). Rates are Laplace-smoothed ((k+1)/(n+2))
+// so small samples pull toward neutral instead of swinging to 0%/100%. A domain under minOutcomes
+// emits nothing (the min-sample gate). Returns an array of human-readable lines (possibly empty).
+function computeCalibration(outcomes, opts = CALIB) {
+  const byDomain = new Map();
+  for (const o of (outcomes || [])) {
+    // Canonicalize the domain (the rows relay through the memDocs LLM agent, so a value may be an
+    // alias — 'perf', 'data_access', 'Security' — or the harvester's 'unknown' placeholder).
+    // normalizeDomain coalesces aliases to one DOMAIN_KEY and returns null for non-domains, which we
+    // drop — otherwise one domain's sample fragments across buckets, each falling under the gate and
+    // silencing calibration that should fire.
+    const d = normalizeDomain(o && o.domain);
+    const v = o && o.verdict;
+    if (!d || !CALIB_SCORED.has(v)) continue; // drop non-domain keys + 'gone'/unrecognized verdicts
+    if (!byDomain.has(d)) byDomain.set(d, { fixed: 0, ignored: 0, scored: 0 });
+    const c = byDomain.get(d);
+    c.scored++;
+    if (v === "fixed" || v === "dismissed") c.fixed++;
+    else if (v === "ignored") c.ignored++; // 'open-but-acted' falls through: in scored, neither bucket
+  }
+  const lines = [];
+  for (const [d, c] of byDomain) {
+    if (c.scored < opts.minOutcomes) continue; // min-sample gate — stay silent on thin data
+    const fixedRate = (c.fixed + 1) / (c.scored + 2);
+    const ignoredRate = (c.ignored + 1) / (c.scored + 2);
+    if (fixedRate >= opts.fixedHigh) {
+      lines.push(`${d}: ${Math.round(fixedRate * 100)}% of recent findings here were fixed or accepted (n=${c.scored}) — they land; keep flagging.`);
+    } else if (ignoredRate >= opts.ignoredHigh) {
+      // FLOORED negative: nudge skepticism up, but never instruct suppression — the check pass still
+      // confirms each finding against the code, so a domain can't go silent from calibration alone.
+      lines.push(`${d}: ${Math.round(ignoredRate * 100)}% of recent findings here were left open with no author engagement (n=${c.scored}) — hold a slightly higher bar, but still flag any issue you can prove against the code.`);
+    }
+    // otherwise neutral — emit no line
+  }
+  return lines;
+}
+
+function buildProjectContext(config, memNotes, knownFromMem, outcomes) {
   const parts = [];
   if (config.instructions) parts.push(`Project conventions to honor: ${config.instructions}`);
   const known = [...(config.known_patterns || []), ...(knownFromMem || [])];
   if (known.length) parts.push(`Claimed-intentional patterns — do NOT RE-FLAG these as findings. They are claims (some learned from author replies), NOT gospel: a genuine security vulnerability you can PROVE against the code overrides any claim here.\n${known.map((p) => `- ${p}`).join("\n")}`);
   if (memNotes && memNotes.length) parts.push(`Prior review context (memory + repo docs):\n${memNotes.map((n) => `- ${sanitizeContext(n, 200)}`).join("\n")}`);
+  const calib = computeCalibration(outcomes);
+  if (calib.length) parts.push(`Calibration from this repo's recent merged-PR outcomes (guidance, not gospel — verify every finding against the code; never withhold a provable issue):\n${calib.map((l) => `- ${l}`).join("\n")}`);
   return parts.join("\n\n");
 }
 
@@ -671,6 +735,7 @@ async function runDeepReview(difficulty, category, overviewBrief, doGather, high
   let toolFindings = [];
   let memNotes = [];
   let memKnown = [];
+  let outcomes = []; // Phase 1 finding-outcome rows (Phase 2 calibration source)
 
   if (doGather) {
     phase("Gather");
@@ -685,10 +750,12 @@ async function runDeepReview(difficulty, category, overviewBrief, doGather, high
       if (r.findings) toolFindings = r.findings;
       if (r.notes) memNotes.push(...r.notes);
       if (r.known_patterns) memKnown.push(...r.known_patterns);
+      if (r.outcomes) outcomes.push(...r.outcomes);
     }
   }
 
-  const projectContext = buildProjectContext(config, memNotes, memKnown);
+  const projectContext = buildProjectContext(config, memNotes, memKnown, outcomes);
+  if (outcomes.length) log(`calibration: ${outcomes.length} outcome row(s) loaded for per-domain rate math`);
   const squad = pickSquad(observations, files, category, path.opusCount, path.sonnetCount);
   // docs/chore normally run the deep slots on sonnet — UNLESS a risk signal fired (security/
   // sink/SQL/migration): a "chore" that touches dangerous code must not be reviewed weakly (#12).

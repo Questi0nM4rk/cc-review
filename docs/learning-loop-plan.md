@@ -150,6 +150,22 @@ no LLM reads the comment text.**
 - **Depends on:** Phase 0.
 
 ### Phase 2 — Feed calibration back into reviews (close the loop) · [RC] · M
+
+> **Status (2026-06-12): v1 SHIPPED.** `computeCalibration` + the `buildProjectContext` calibration
+> block are live: the gather `memDocs` agent reads `learnings/outcomes.jsonl`, and per-domain rates
+> (Laplace-smoothed, min-sample-gated at `n≥8`, `gone`/unknown verdicts excluded) inject a visible
+> calibration block into `projectContext` → the squad reviewers **and** the check pass. **Asymmetric +
+> floored:** `fixedHigh=0.7` (act on code-verified signal at a lower bar → "keep flagging") vs
+> `ignoredHigh=0.8` (the weak, friction-contaminated `ignored` signal needs MORE evidence → at most "a
+> slightly higher bar — still flag what you can prove"); calibration can never instruct silence, and the
+> check still confirms every provable finding. **As-built:** no in-brain time-decay (the workflow
+> runtime has no clock) — the rolling window is Phase 1's 180-day file trim. Only flows at d≥2 (where
+> gather + the check pass run). **Deliberately DEFERRED (honest scope):** the §3/§4 *drift-monitoring* —
+> a `calibration.md` health line + an overview warning when a domain trends toward zero flags. v1's
+> collapse-resistance rests on the design being a *framing nudge, not a filter* (the check gates on
+> provable findings regardless of calibration text), which bounds — but does not actively monitor —
+> Goodhart drift. The explicit health surfacing is a follow-up (tracked with Phase 4's recall work).
+
 The recalled signal must **change behavior**, not be soft context — but it must be a *calibrated,
 sample-aware* signal, computed deterministically before it reaches any prompt.
 - `buildProjectContext()` gains a **calibration block**: read `outcomes.jsonl` (rolling window),
