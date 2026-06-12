@@ -7,7 +7,9 @@ version: 1
 #   every_push : review when the PR opens AND on every push to the PR branch
 #   pr_open    : review only when the PR is opened or reopened           (default)
 #   disabled   : never auto-review — only an @cc-review comment triggers a run
-trigger: pr_open
+trigger: disabled  # PAUSED 2026-06-12 to let the weekly Claude quota recover — self-dogfooding ran
+                   # ~6 heavy `claude -p` reviews building the learning loop. @cc-review still works
+                   # on-demand; restore to pr_open once the weekly recovers.
 
 # Primary languages in this repo. Loads the matching strict checklists
 # (dotnet / typescript / python / shell) for the reviewers to check against.
