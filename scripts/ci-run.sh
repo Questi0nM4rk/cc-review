@@ -25,6 +25,9 @@
 set -uo pipefail
 
 CC_REVIEW_BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Shared memory-branch slice fetch/push (also used by cc-review-cleanup.yml's Phase-1 harvest, so
+# both read/write the slice identically — one implementation, no drift).
+source "$CC_REVIEW_BOT_DIR/scripts/memory-slice.sh"
 export GITHUB_TOKEN="${GH_TOKEN}"
 : "${CC_POST:=1}" "${PING_OVERRIDE:=false}"
 WS="${GITHUB_WORKSPACE:-$PWD}"
@@ -46,10 +49,7 @@ fi
 git fetch origin "$HEAD" 2>/dev/null && git checkout -q -f FETCH_HEAD 2>/dev/null || echo "PR-head checkout skipped (event already on head)"
 # Stage this repo's memory slice INTO THE WORKSPACE (.cc-memory) — the brain writes
 # there because the sandbox blocks /tmp writes. The slice carries the review-state marker.
-if git -C "$CC_REVIEW_BOT_DIR" fetch origin claude-reviewer/memory 2>/dev/null; then
-  git -C "$CC_REVIEW_BOT_DIR" archive FETCH_HEAD "${REPO}/" 2>/dev/null \
-    | tar -x -C .cc-memory --strip-components=2 2>/dev/null || true
-fi
+fetch_slice "$CC_REVIEW_BOT_DIR" "$REPO" .cc-memory
 # Phase-3 cold-start gate: a slice with no `.backfilled` sentinel has never been primed. Decide NOW,
 # while .cc-memory reflects ONLY the fetched slice — the placeholder MEMORY.md write on the next line
 # would otherwise mask an empty slice and this gate could never fire. Repos that predate backfill have
@@ -259,27 +259,7 @@ fi
   git push -f origin "out:refs/heads/${LOG_BRANCH}" || echo "log branch push failed (non-fatal)"
 ) || true
 
-# 6) Push the project memory slice back to claude-reviewer/memory (reuses the bot
-# clone's authenticated origin; shallow clone has no tracking ref → key off FETCH_HEAD).
-( SRC="$WS/.cc-memory"; SLICE="$REPO"
-  [ -d "$SRC" ] || { echo "no .cc-memory to push"; exit 0; }
-  cd "$CC_REVIEW_BOT_DIR"
-  git config user.name "cc-review[bot]"; git config user.email "cc-review[bot]@users.noreply.github.com"
-  push_mem() {
-    if git fetch origin claude-reviewer/memory 2>/dev/null; then
-      git checkout -B claude-reviewer/memory FETCH_HEAD
-    else
-      git checkout --orphan claude-reviewer/memory; git rm -rf . 2>/dev/null || true
-      printf '# cc-review memory\n\nPer-project palace. Each top dir is one consumer repo.\n' > README.md
-      git add README.md; git commit -q -m "init memory"
-    fi
-    mkdir -p "$SLICE"
-    cp -r "$SRC/." "$SLICE/" 2>/dev/null || true
-    git add "$SLICE/"
-    git diff --cached --quiet && { echo "no memory changes"; return 0; }
-    git commit -q -m "memory: ${REPO} PR #${PR_NUMBER}"; git push origin claude-reviewer/memory
-  }
-  for n in 1 2 3; do push_mem && break; echo "memory push retry $n"; sleep $((n*5)); done
-) || true
+# 6) Push the project memory slice back to claude-reviewer/memory (shared with the Phase-1 harvest).
+push_slice "$CC_REVIEW_BOT_DIR" "$REPO" "$WS/.cc-memory" "memory: ${REPO} PR #${PR_NUMBER}" || true
 
 exit $RUN_FAILED

@@ -1,8 +1,13 @@
 # ============================================================================
-#  cc-review cleanup — deletes the ephemeral debug log branch on PR close.
-#  Pairs with cc-review.yml, which creates pr-<N>-cc-review-output
-#  while the PR is open. Once the PR is closed or merged, that branch is junk —
-#  this removes it so consumer repos do not accumulate -cc-review-output refs.
+#  cc-review cleanup — runs on PR close. Two jobs:
+#   1. harvest-outcomes (MERGED PRs only) — learning-loop Phase 1: record each
+#      posted finding's fate to the memory slice, the data the bot used to throw
+#      away. Deterministic; reads via the GitHub API (no working tree needed).
+#   2. delete-log-branch — removes the ephemeral pr-<N>-cc-review-output branch
+#      that cc-review.yml created while the PR was open.
+#
+#  This file lives in the CONSUMER repo's .github/workflows/ ([CI] — a change here
+#  needs a per-repo PR to take effect, unlike the runtime-cloned brain/scripts).
 # ============================================================================
 name: cc-review cleanup
 
@@ -14,6 +19,48 @@ permissions:
   contents: write
 
 jobs:
+  harvest-outcomes:
+    # MERGE only — a close-without-merge has no outcome signal (the work was abandoned). Same-repo
+    # only — a fork PR's close event can't see the App secrets. Best-effort: harvest-outcomes.mjs
+    # always exits 0, so a harvest hiccup never red-X's a PR close.
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.REVIEWER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Harvest finding outcomes into the memory slice
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          export GITHUB_TOKEN="$GH_TOKEN"
+          # Clone cc-review with the App token (which CAN read the private bot repo) so
+          # harvest-outcomes.mjs + memory-slice.sh are present and origin is authenticated for the
+          # slice push. No actions/checkout of THIS repo: the harvester reads finding outcomes via
+          # the GitHub API + the staged slice, never the working tree (so squash/rebase merges that
+          # GC the PR head SHA don't matter — isOutdated is GitHub's own region-changed bit).
+          BOT_DIR=/tmp/cc-review-bot
+          git clone --depth 1 -b main \
+            "https://x-access-token:${GH_TOKEN}@github.com/Questi0nM4rk/cc-review.git" "$BOT_DIR" \
+            || { echo "could not clone cc-review — skipping harvest"; exit 0; }
+          source "$BOT_DIR/scripts/memory-slice.sh"
+          mkdir -p .cc-memory/learnings
+          fetch_slice "$BOT_DIR" "$REPO" .cc-memory
+          node "$BOT_DIR/scripts/harvest-outcomes.mjs" --repo "$REPO" --pr "$PR_NUMBER" --slice "$PWD/.cc-memory"
+          push_slice "$BOT_DIR" "$REPO" "$PWD/.cc-memory" "memory: ${REPO} outcomes for merged PR #${PR_NUMBER}"
+
   delete-log-branch:
     runs-on: ubuntu-latest
     # Skip fork PRs: their close events can't see repo secrets, so the App-token step would hard-fail

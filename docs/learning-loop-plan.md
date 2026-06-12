@@ -93,6 +93,19 @@ not reuse one.
 - **Depends on:** nothing. Ship after Phase 3 (Phase 3 is the faster felt win); Phase 0 unblocks Phase 1.
 
 ### Phase 1 — Harvest outcomes on PR close (the smallest real loop) · [RC] script + [CI] trigger · L
+
+> **Status (2026-06-12): SHIPPED.** `scripts/harvest-outcomes.mjs` (runs on **merge**, classifies each
+> finding's fate deterministically → `learnings/outcomes.jsonl`), `scripts/memory-slice.sh` (shared
+> slice fetch/push, now used by both `ci-run.sh` and cleanup), and the `harvest-outcomes` job in
+> `cc-review-cleanup.yml` are live. **As-built:** `isOutdated` (GitHub's per-thread "region changed"
+> bit) IS the region-diff signal — no compare API / local `git diff` needed (which §6 #3 ruled out);
+> verdicts are `fixed / dismissed / ignored / open-but-acted / gone`; outcomes.jsonl is idempotent on
+> re-harvest (replaces a PR's rows by `id+pr`) and trimmed to a 180-day window. **[CI] caveat:** the
+> `cc-review-cleanup.yml` change reaches consumers only via a per-repo PR (it's consumer-installed).
+> Live-verified: the harvester runs end-to-end against a real merged PR; the `fixed/dismissed/ignored`
+> branches are unit-tested (the live confirmation against a real marker-bearing thread comes on the
+> first post-Phase-0 merge).
+
 Record each finding's fate — the data the bot throws away today. **Classification is deterministic;
 no LLM reads the comment text.**
 - **New [RC] `scripts/harvest-outcomes.ts`** (`repo`, `pr`): read `pr-<N>/findings.json`, and classify
@@ -113,7 +126,8 @@ no LLM reads the comment text.**
     even the narrow bucket as a **weak** prior.
   - Record the **resolved-sample size N** alongside, so Phase 2 can down-weight a near-zero-resolution repo
     (where the signal is structurally untrustworthy).
-  - Append to `learnings/outcomes.jsonl` (`{id, pr, domain, verdict, n_resolved, at}`).
+  - Append to `learnings/outcomes.jsonl` (`{id, pr, domain, verdict, at}` — resolved-rate is derived
+    at read time by Phase 2 from verdicts grouped by `pr`, not stored as a misleading per-row aggregate).
 - **Deterministic trim, runner-side:** `harvest-outcomes.ts` itself trims `outcomes.jsonl` to the last
   **N PRs / D days** (by the `at` field) and rewrites it atomically. The **prose-curating memory agent
   must never touch `outcomes.jsonl`** — it is machine-owned structured data; consolidating it as prose

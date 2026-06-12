@@ -185,6 +185,15 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   accumulates the union across re-runs (`dropAlreadyThreaded` suppresses re-posts). Run OUTPUT, not
   review context. No `posted_at` — the workflow runtime can't timestamp; recency is recorded
   runner-side when outcomes are harvested.
+- **Outcome log** (learning-loop Phase 1) — `<owner>/<repo>/learnings/outcomes.jsonl`, appended on PR
+  **merge** by `scripts/harvest-outcomes.mjs` (run from `cc-review-cleanup.yml`'s harvest job): one row
+  `{id, pr, domain, verdict, at}` per posted finding, classifying its fate **against GitHub
+  ground truth** — `fixed` (thread resolved, or `isOutdated` says the region changed), `dismissed`
+  (resolved with a `Dismissed:` reply), `open-but-acted` (open but the author engaged — NOT noise),
+  `ignored` (open, region unchanged, no engagement — the only, weak, noise signal), `gone` (no thread
+  carries the id). **Deterministic** (no LLM reads comment text — an injected old comment can't steer a
+  verdict) and **idempotent** (a re-harvest replaces a PR's rows by `id+pr`; trimmed to a rolling
+  window). The slice fetch/push is shared with the review pipeline via `scripts/memory-slice.sh`.
 - **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on
   re-runs. It is the **primary** first-vs-re-run signal, but **not the only one**: if a user deletes
   it, the review-state marker still proves the PR was reviewed, so the bot takes the re-run path
