@@ -235,6 +235,17 @@ pure [RC], learns from *humans* (high-quality signal), and pays off on the very 
 - **Depends on:** nothing (learns from **humans**, not the bot's own outcomes — complements Phases 1–2).
 
 ### Phase 4 — Miss capture / false negatives · [RC] · L · lowest confidence · **prerequisite for "working"**
+
+> **Status (2026-06-12): v1 SHIPPED (recall signal captured; feedback deferred).** `harvest-outcomes.mjs`
+> now also records **miss candidates**: on a merged **fix/revert/hotfix** PR (`detectFixPr` on the title)
+> that touches a file an **earlier** PR was reviewed **clean** on (APPROVE), it writes
+> `learnings/misses.jsonl` rows `{file, ref_pr, clean_pr, at}` (idempotent by `file+ref_pr`, same trim).
+> The "reviewed clean" data comes from the review-state marker, now extended to record `event` + the
+> reviewed `files` list (`markerPrompt`). Live-verified: a real `fix(ci):` PR over a seeded clean file →
+> 1 miss; a `docs:` PR → none. **Deliberately DEFERRED (honest scope):** *feeding* misses into Phase 2's
+> per-domain scrutiny (the file→domain mapping is fuzzy/noisy — a weak prior) and the §3/§4
+> drift-monitoring (`calibration.md` health + overview warning). v1 gives the **recall metric** (the §4
+> gate that makes "precision up" trustworthy); acting on it is the follow-up.
 The only path to learning what the bot *missed* — and the **only recall signal in the whole plan.**
 Without it, Phases 0–2 have *no* counterweight to silence (see §4: the precision metric alone is
 Goodhart-gameable by going quiet), so Phase 4 is **not** an optional last step — it is the gate on

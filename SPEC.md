@@ -169,8 +169,9 @@ The two web researchers replace the old offline recon scanners; they are the sam
 All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<owner>/<repo>/`.
 
 - **Learnings** (durable, cross-PR): `MEMORY.md` + `learnings/{found-issues,lessons,known-patterns,decisions}.md`.
-- **Per-PR review-state marker** — `<owner>/<repo>/pr-<N>/review-state.json`, a tiny stamp
-  (`reviewed_head_sha` — the real head commit SHA, for audit/traceability — and `reviewed_file_count`)
+- **Per-PR review-state marker** — `<owner>/<repo>/pr-<N>/review-state.json`, a small stamp
+  (`reviewed_head_sha` — the real head commit SHA, for audit/traceability — `reviewed_file_count`, plus
+  `event` (the verdict) and the reviewed `files` list, which feed learning-loop Phase 4 miss-capture)
   written as **run output, not learned memory** on every posted review. The significant-change check
   (§9) compares the current PR's file/line counts against `reviewed_file_count`; it is
   **not** review context and is never fed back to a reviewer. (Gather observations are deliberately
@@ -200,6 +201,12 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   signal is asymmetric (`fixed` acts at a lower bar than `ignored`) and floored (it never instructs
   silence; the check still confirms every provable finding). This is the loop closing: outcomes →
   calibration → next review.
+- **Miss log** (learning-loop Phase 4) — `<owner>/<repo>/learnings/misses.jsonl`, appended by the same
+  harvester: when a merged **fix/revert/hotfix** PR touches a file an **earlier** PR was reviewed
+  **clean** on, a row `{file, ref_pr, clean_pr, at}` records a candidate false-negative — the **recall**
+  counterweight to the precision signal (so "fewer findings" can't masquerade as "better"). A
+  deliberately weak prior (most fix PRs aren't fixing a bot miss); v1 captures the metric, feeding it
+  into per-domain scrutiny is a deferred follow-up.
 - **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on
   re-runs. It is the **primary** first-vs-re-run signal, but **not the only one**: if a user deletes
   it, the review-state marker still proves the PR was reviewed, so the bot takes the re-run path

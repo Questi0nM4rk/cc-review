@@ -24,7 +24,7 @@
 // ============================================================================
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // The bot's GitHub App identity — the login on every comment it authored. A reply by ANY other
@@ -103,6 +103,34 @@ export function trimOutcomes(rows, nowIso, maxDays = OUTCOME_MAX_DAYS) {
   });
 }
 
+// --- miss capture (Phase 4) -------------------------------------------------
+// Does this merged PR look like a fix/revert/hotfix? A weak, deliberately broad heuristic (the plan
+// rates Phase 4 lowest-confidence). Matches both prose titles and conventional-commit prefixes.
+export function detectFixPr(title) {
+  const t = String(title || "");
+  // Note: 'patch' is deliberately EXCLUDED — it overloads onto semver "patch release/version" bumps
+  // (false positives). A genuine patch still matches via fix/bug/regression.
+  return /\b(fix(es|ed)?|revert(s|ed)?|hotfix|bug(fix)?|regression)\b/i.test(t)
+    || /^\s*(fix|revert)(\(|:|!)/i.test(t);
+}
+
+// A `miss` candidate = this fix PR touches a file that an EARLIER PR was reviewed CLEAN on (APPROVED,
+// no findings) — i.e. the bot may have missed something there. cleanReviews = [{pr, files}] of prior
+// APPROVED reviews. Only PRs reviewed clean BEFORE refPr count; the most recent clean review of each
+// file is attributed. One miss per file. This is a WEAK prior (most fix PRs aren't fixing a bot miss).
+export function findMisses(targetFiles, cleanReviews, refPr) {
+  const targets = new Set(targetFiles || []);
+  const prior = (cleanReviews || []).filter((cr) => cr && cr.pr < refPr).sort((a, b) => b.pr - a.pr);
+  const misses = [];
+  const seen = new Set();
+  for (const cr of prior) {
+    for (const f of (cr.files || [])) {
+      if (targets.has(f) && !seen.has(f)) { seen.add(f); misses.push({ file: f, ref_pr: refPr, clean_pr: cr.pr }); }
+    }
+  }
+  return misses;
+}
+
 // Parse a .jsonl file into an array of objects, skipping blank/malformed lines. [] if absent.
 export function readJsonl(path) {
   if (!existsSync(path)) return [];
@@ -125,6 +153,36 @@ function gh(args) {
 function flag(name) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+// PR title + changed-file paths (for Phase 4 miss detection). Returns null on failure.
+function prMeta(repo, pr) {
+  const r = gh(["pr", "view", String(pr), "--repo", repo, "--json", "title,files"]);
+  if (r.code !== 0) return null;
+  try {
+    const j = JSON.parse(r.stdout);
+    return { title: j.title || "", files: (j.files || []).map((f) => f.path).filter(Boolean) };
+  } catch { return null; }
+}
+
+// Read prior per-PR review-state markers from the slice — the ones a CLEAN review (APPROVE) wrote with
+// its file list (Phase 4 needs to know what was reviewed clean). Returns [{pr, files}] for APPROVED
+// reviews other than exceptPr. Markers written before Phase 4 shipped lack event/files and are skipped.
+function readCleanReviews(slice, exceptPr) {
+  const out = [];
+  let entries;
+  try { entries = readdirSync(slice, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    const m = e.isDirectory() && /^pr-(\d+)$/.exec(e.name);
+    if (!m) continue;
+    const prNum = Number(m[1]);
+    if (prNum === exceptPr) continue;
+    let state; // review-state.json is a single JSON object, not jsonl
+
+    try { state = JSON.parse(readFileSync(join(slice, e.name, "review-state.json"), "utf8")); } catch { continue; }
+    if (state && state.event === "APPROVE" && Array.isArray(state.files)) out.push({ pr: prNum, files: state.files });
+  }
+  return out;
 }
 
 // Fetch merge state + ALL review threads, paging through reviewThreads so a PR with >100 threads
@@ -160,33 +218,47 @@ function main() {
   const slice = flag("slice");
   if (!repo || !pr || !slice) { console.log("harvest-outcomes: missing --repo/--pr/--slice; nothing to do"); return; }
 
-  const findingsPath = join(slice, `pr-${pr}`, "findings.jsonl");
-  const findings = readJsonl(findingsPath);
-  if (!findings.length) { console.log(`harvest-outcomes: no findings.jsonl for PR #${pr} — nothing to harvest`); return; }
-
+  const prNum = Number(pr);
   const prData = fetchPr(repo, pr);
-  if (!prData) { console.log(`harvest-outcomes: could not fetch PR #${pr} threads — skipping (will not retry)`); return; }
+  if (!prData) { console.log(`harvest-outcomes: could not fetch PR #${pr} — skipping (will not retry)`); return; }
   if (!prData.merged) { console.log(`harvest-outcomes: PR #${pr} was closed without merging — no outcome signal, skipping`); return; }
-
-  const byId = indexThreads(prData.threads);
-
-  // Dedup findings by id (a finding re-posted across runs can appear more than once in the log).
-  const seen = new Set();
-  const rowsToScore = findings.filter((f) => f && f.id && !seen.has(f.id) && seen.add(f.id));
-  const verdicts = rowsToScore.map((f) => ({ f, verdict: classifyOutcome(byId.get(f.id) || null) }));
   const at = new Date().toISOString();
-  // One row per finding. NO PR-level aggregate here (an earlier draft stamped a per-PR resolved-count
-  // onto every row, which any per-row sum would over-count) — Phase 2 derives resolved-rate at read
-  // time from the verdicts grouped by pr.
-  const newRows = verdicts.map(({ f, verdict }) => ({ id: f.id, pr: Number(pr), domain: f.domain || "unknown", verdict, at }));
-
-  const outcomesPath = join(slice, "learnings", "outcomes.jsonl");
   mkdirSync(join(slice, "learnings"), { recursive: true });
-  const merged = mergeOutcomes(readJsonl(outcomesPath), newRows, at);
-  writeFileSync(outcomesPath, merged.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
 
-  const tally = verdicts.reduce((m, v) => ((m[v.verdict] = (m[v.verdict] || 0) + 1), m), {});
-  console.log(`harvest-outcomes: PR #${pr} merged — scored ${newRows.length} finding(s): ${JSON.stringify(tally)}; ${merged.length} row(s) in outcomes.jsonl`);
+  // (A) OUTCOME HARVEST — classify this PR's own posted findings (needs its findings.jsonl).
+  const findings = readJsonl(join(slice, `pr-${pr}`, "findings.jsonl"));
+  if (findings.length) {
+    const byId = indexThreads(prData.threads);
+    const seen = new Set(); // dedup findings by id (a re-posted finding can appear more than once)
+    const rowsToScore = findings.filter((f) => f && f.id && !seen.has(f.id) && seen.add(f.id));
+    const verdicts = rowsToScore.map((f) => ({ f, verdict: classifyOutcome(byId.get(f.id) || null) }));
+    // One row per finding (no per-PR aggregate — Phase 2 derives rates from verdicts grouped by pr).
+    const newRows = verdicts.map(({ f, verdict }) => ({ id: f.id, pr: prNum, domain: f.domain || "unknown", verdict, at }));
+    const outcomesPath = join(slice, "learnings", "outcomes.jsonl");
+    const merged = mergeOutcomes(readJsonl(outcomesPath), newRows, at);
+    writeFileSync(outcomesPath, merged.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    const tally = verdicts.reduce((m, v) => ((m[v.verdict] = (m[v.verdict] || 0) + 1), m), {});
+    console.log(`harvest-outcomes: PR #${pr} — scored ${newRows.length} finding(s): ${JSON.stringify(tally)}; ${merged.length} row(s) in outcomes.jsonl`);
+  } else {
+    console.log(`harvest-outcomes: PR #${pr} — no findings.jsonl, nothing of its own to score`);
+  }
+
+  // (B) MISS CAPTURE (Phase 4) — if this is a fix/revert PR over a file an EARLIER PR was reviewed
+  // CLEAN on, record a (weak) miss candidate. Independent of (A): a clean-reviewed fix PR has no
+  // findings.jsonl of its own. Idempotent by (file, ref_pr); trimmed to the same window.
+  const meta = prMeta(repo, pr);
+  if (meta && detectFixPr(meta.title)) {
+    const newMisses = findMisses(meta.files, readCleanReviews(slice, prNum), prNum).map((m) => ({ ...m, at }));
+    if (newMisses.length) {
+      const missesPath = join(slice, "learnings", "misses.jsonl");
+      const existing = readJsonl(missesPath).filter((r) => !newMisses.some((n) => n.file === r.file && n.ref_pr === r.ref_pr));
+      const mergedMisses = trimOutcomes([...existing, ...newMisses], at);
+      writeFileSync(missesPath, mergedMisses.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+      console.log(`harvest-outcomes: PR #${pr} looks like a fix → ${newMisses.length} miss candidate(s) over previously-clean-reviewed file(s); ${mergedMisses.length} row(s) in misses.jsonl`);
+    } else {
+      console.log(`harvest-outcomes: PR #${pr} looks like a fix but touched no previously-clean-reviewed file — no miss`);
+    }
+  }
 }
 
 // Run main() only when executed directly, not when imported by the test.

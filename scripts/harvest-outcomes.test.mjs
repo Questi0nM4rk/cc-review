@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractFindingId, classifyOutcome, indexThreads, trimOutcomes, mergeOutcomes, readJsonl, OUTCOME_MAX_DAYS,
+  detectFixPr, findMisses,
 } from "./harvest-outcomes.mjs";
 
 // --- extractFindingId -------------------------------------------------------
@@ -127,6 +128,38 @@ test("mergeOutcomes keeps a same id on a DIFFERENT pr (id+pr is the key, not id)
   const newRows = [{ id: "aaaaaaaa", pr: 8, verdict: "ignored", at: now }]; // same finding text, other PR
   const merged = mergeOutcomes(existing, newRows, now);
   assert.equal(merged.length, 2);
+});
+
+// --- detectFixPr (Phase 4 miss capture) -------------------------------------
+test("detectFixPr matches fix/revert/hotfix titles + conventional-commit prefixes, not features", () => {
+  for (const t of ["fix: handle null", "Fix the login bug", "revert: bad change",
+    'Revert "feat: add X"', "hotfix prod outage", "patch the regression", "bugfix: off-by-one"]) {
+    assert.equal(detectFixPr(t), true, `expected fix for: ${t}`);
+  }
+  // 'patch' alone is excluded (semver bumps); a real patch still matches via regression/bug above.
+  for (const t of ["feat: add calibration", "docs: update readme", "chore: bump deps", "refactor naming",
+    "chore: patch release 1.2.3", "patch version bump", ""]) {
+    assert.equal(detectFixPr(t), false, `expected NOT-fix for: ${t}`);
+  }
+});
+
+// --- findMisses -------------------------------------------------------------
+test("findMisses flags a fix PR's file that an EARLIER PR was reviewed clean on", () => {
+  const clean = [{ pr: 1, files: ["a.ts", "c.ts"] }, { pr: 2, files: ["d.ts"] }];
+  const misses = findMisses(["a.ts", "b.ts"], clean, 5);
+  assert.deepEqual(misses, [{ file: "a.ts", ref_pr: 5, clean_pr: 1 }]); // b not clean-reviewed; c/d not touched
+});
+test("findMisses ignores clean reviews at or after the fix PR (only EARLIER ones count)", () => {
+  assert.deepEqual(findMisses(["a.ts"], [{ pr: 9, files: ["a.ts"] }], 5), []); // pr 9 >= 5
+});
+test("findMisses attributes the MOST RECENT prior clean review of a file, one miss per file", () => {
+  const clean = [{ pr: 1, files: ["a.ts"] }, { pr: 3, files: ["a.ts"] }];
+  assert.deepEqual(findMisses(["a.ts"], clean, 5), [{ file: "a.ts", ref_pr: 5, clean_pr: 3 }]);
+});
+test("findMisses is empty/null safe", () => {
+  assert.deepEqual(findMisses([], [{ pr: 1, files: ["a.ts"] }], 5), []);
+  assert.deepEqual(findMisses(["a.ts"], null, 5), []);
+  assert.deepEqual(findMisses(null, null, 5), []);
 });
 
 // --- readJsonl --------------------------------------------------------------

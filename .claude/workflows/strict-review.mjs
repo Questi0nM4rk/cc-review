@@ -304,9 +304,9 @@ const reviewPostPrompt = (ctx) =>
   `2. resolve threads: ${JSON.stringify(ctx.resolve_ids)} — for each: tsx ${ADAPTER} resolve --pr ${ctx.pr_number} --thread <id>\n` +
   `3. post the review: write this payload to ${SCRATCH}/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload ${SCRATCH}/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nConfirm what you posted in one line.`;
 
-const markerPrompt = (prNumber, head_sha, fileCount) =>
+const markerPrompt = (prNumber, head_sha, files, event) =>
   `Persist the per-PR review-state marker so a later re-run's significant-change check can diff against what was last reviewed (this is run OUTPUT, not learned memory). The dir ${MEM}/pr-${prNumber} already exists. Using a cat-heredoc only (no mkdir/printf/tee/Write), write this file VERBATIM, overwriting any prior copy:\n` +
-  `  cat > ${MEM}/pr-${prNumber}/review-state.json <<'EOF'\n${JSON.stringify({ reviewed_head_sha: head_sha, reviewed_file_count: fileCount }, null, 2)}\nEOF\n` +
+  `  cat > ${MEM}/pr-${prNumber}/review-state.json <<'EOF'\n${JSON.stringify({ reviewed_head_sha: head_sha, reviewed_file_count: files.length, event, files }, null, 2)}\nEOF\n` +
   `If the dir does not exist (local mode), say 'no marker dir (local mode)' and do nothing. Confirm in one line.`;
 
 // Phase-0 instrumentation log: APPEND one JSONL row per posted inline finding (run OUTPUT, not learned
@@ -905,7 +905,7 @@ if (post) {
   // rerun-blocked gate return earlier), so this stamps on every posted review — first or
   // re-run. The old write was mis-gated behind gather, so it skipped difficulty-1 first
   // reviews and minor re-runs, leaving the sig-change baseline stale.
-  await agent(markerPrompt(prNumber, headSha, files.length), { model: "sonnet", label: "review-state", phase: "Post" });
+  await agent(markerPrompt(prNumber, headSha, files, event), { model: "sonnet", label: "review-state", phase: "Post" });
   // Append the per-finding instrumentation log (Phase 0). Only when there are inline findings —
   // APPROVE runs and out-of-diff-only runs leave it untouched.
   if (findingRows.length) await agent(findingsLogPrompt(prNumber, findingRows), { model: "sonnet", label: "findings-log", phase: "Post" });
