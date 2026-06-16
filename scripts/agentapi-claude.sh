@@ -85,6 +85,24 @@ if [ "$SELFTEST" != "1" ]; then
     else
       rm -f "$seed_tmp"; echo "agentapi-claude: WARN onboarding-seed merge failed — claude may hit the onboarding TUI" >&2
     fi
+
+    # SETTINGS seed (separate file, separate concern): ~/.claude/settings.json governs permission-prompt
+    # BEHAVIOUR. Without skipDangerousModePermissionPrompt, interactive `claude --dangerously-skip-permissions`
+    # prints "Bypass permissions mode was disabled by settings" and then blocks on "Run a dynamic workflow?",
+    # so the brain never runs. Merge our skip-flags into any existing settings (stub-safe), same fresh-runner gate.
+    SETTINGS_SEED="$SCRIPT_DIR/ci-claude-settings.json"
+    if [ -f "$SETTINGS_SEED" ]; then
+      mkdir -p "$HOME/.claude"
+      sfile="$HOME/.claude/settings.json"
+      scur='{}'; [ -f "$sfile" ] && scur="$(cat "$sfile" 2>/dev/null)"; [ -n "$scur" ] || scur='{}'
+      s_tmp="$(mktemp)"
+      if jq -n --argjson base "$scur" --slurpfile seed "$SETTINGS_SEED" '$base * $seed[0]' > "$s_tmp" 2>/dev/null && [ -s "$s_tmp" ]; then
+        mv "$s_tmp" "$sfile"
+        echo "agentapi-claude: seeded \$HOME/.claude/settings.json (skip dangerous-mode + workflow prompts)" >&2
+      else
+        rm -f "$s_tmp"; echo "agentapi-claude: WARN settings-seed merge failed — claude may block on a permission prompt" >&2
+      fi
+    fi
   fi
 fi
 
