@@ -26,6 +26,21 @@ fetch_slice() {
   fi
 }
 
+# fetch_global <bot_dir> <dest>
+#   Extract the cross-repo `_global/` subtree from claude-reviewer/memory into <dest> (which must
+#   already exist), stripping the `_global/` prefix → <dest>/learnings/*.md. This is the ADDITIVE
+#   cross-project layer (general lessons / watch-patterns) every review reads IN ADDITION to its repo
+#   slice. Staged in a SEPARATE dir from the repo slice (never under it) so push_slice can't copy it
+#   into a per-repo subtree. Read-only for the review; only the maintenance job writes _global/. No-op
+#   when the branch/subtree is absent. Never fails the caller.
+fetch_global() {
+  local bot_dir="$1" dest="$2"
+  if git -C "$bot_dir" fetch origin claude-reviewer/memory 2>/dev/null; then
+    git -C "$bot_dir" archive FETCH_HEAD "_global/" 2>/dev/null \
+      | tar -x -C "$dest" --strip-components=1 2>/dev/null || true
+  fi
+}
+
 # push_slice <bot_dir> <repo> <src> <commit_msg>
 #   Commit <src>'s contents into <repo>/ on claude-reviewer/memory and push,
 #   reusing the bot clone's authenticated origin. 3-attempt retry. No-op when

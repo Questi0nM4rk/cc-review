@@ -36,7 +36,7 @@ cd "$WS"
 # ── 1) Pre-fetch diff + stage the memory slice ──────────────────────────────
 # Agents are sandboxed to the workspace and cannot mkdir or write /tmp — pre-create
 # the scratch dir (post payloads) and the memory dir (learnings + per-PR marker).
-mkdir -p /tmp/run .cc-run .cc-memory/learnings ".cc-memory/pr-${PR_NUMBER}"
+mkdir -p /tmp/run .cc-run .cc-memory/learnings ".cc-memory/pr-${PR_NUMBER}" .cc-global/learnings
 gh pr view "$PR_NUMBER" --repo "$REPO" --json title,body,author,baseRefName,headRefName,files > /tmp/pr-meta.json
 BASE=$(jq -r '.baseRefName' /tmp/pr-meta.json); HEAD=$(jq -r '.headRefName' /tmp/pr-meta.json)
 if ! gh pr diff "$PR_NUMBER" --repo "$REPO" > /tmp/pr-diff.txt 2>/dev/null; then
@@ -50,6 +50,10 @@ git fetch origin "$HEAD" 2>/dev/null && git checkout -q -f FETCH_HEAD 2>/dev/nul
 # Stage this repo's memory slice INTO THE WORKSPACE (.cc-memory) — the brain writes
 # there because the sandbox blocks /tmp writes. The slice carries the review-state marker.
 fetch_slice "$CC_REVIEW_BOT_DIR" "$REPO" .cc-memory
+# Stage the cross-repo ADDITIVE `_global/` layer into a SEPARATE dir (.cc-global) — NOT under
+# .cc-memory, so push_slice can't copy it into this repo's slice. The brain reads it read-only as
+# additional context; only the maintenance job writes it. No-op until the layer exists.
+fetch_global "$CC_REVIEW_BOT_DIR" .cc-global
 # Phase-3 cold-start gate: a slice with no `.backfilled` sentinel has never been primed. Decide NOW,
 # while .cc-memory reflects ONLY the fetched slice — the placeholder MEMORY.md write on the next line
 # would otherwise mask an empty slice and this gate could never fire. Repos that predate backfill have
@@ -78,9 +82,10 @@ tar -xzf /tmp/gitleaks.tgz -C "$HOME/.local/bin" gitleaks
 # so the first review isn't cold. Sentinel-gated → runs at most once per repo. Best-effort: a failure
 # leaves the repo to review cold (the prior baseline) and the sentinel unwritten, so it retries next
 # run. It never posts and never writes suppression rules. The synth agent writes .cc-memory/.backfilled
-# LAST (proof of completion); push_mem ships it with the slice. Tunable via BACKFILL_N (default 5).
+# LAST (proof of completion); push_mem ships it with the slice. Tunable via BACKFILL_N (default 3 —
+# a one-time-per-repo cost; 3 recent merged PRs still give convention/culture signal, raise if wanted).
 if [ "$BACKFILL_NEEDED" = "1" ]; then
-  BACKFILL_N="${BACKFILL_N:-5}"
+  BACKFILL_N="${BACKFILL_N:-3}"
   BF_PRS=$(gh pr list --repo "$REPO" --state merged --limit "$BACKFILL_N" --json number --jq '[.[].number]' 2>/dev/null || echo "[]")
   # Only proceed on a real non-empty JSON array — a gh/jq hiccup can yield "", "null", or a stray
   # string; validating here keeps a malformed value out of the agent prompt (and out of the log line).

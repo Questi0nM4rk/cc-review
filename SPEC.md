@@ -93,8 +93,8 @@ significant re-run then re-posts the overview.
 | # | Phase | Model · effort | Gate | Output |
 |---|-------|----------------|------|--------|
 | 1 | **Fetch** — diff + PR meta + prior threads via `review-platform.ts` | sonnet | always | context |
-| 2 | **Holistic review** — reads the **diff only**; emits overview walkthrough (prose + one mermaid diagram to `docs/overview-diagram-standard.md`), **difficulty 1–5**, and detects `answer`-intent. **Posts the overview first** (with the marker). | opus · medium | always | overview, difficulty |
-| 3 | **Gather** (parallel) — see §6 | sonnet ×2 + haiku | difficulty ≥ 2 | observations + signals |
+| 2 | **Holistic review** — reads the **diff only**; emits overview walkthrough (prose + one mermaid diagram to `docs/overview-diagram-standard.md`), **difficulty 1–5**, and detects `answer`-intent. **Posts the overview first** (with the marker). | opus · medium (sonnet on doc-only) | always | overview, difficulty |
+| 3 | **Gather** (parallel) — see §6 | sonnet ×2 + haiku | difficulty ≥ 2 (web ×2 skipped on small, non-risky diffs) | observations + signals |
 | 4 | **Squad** — difficulty-scaled count + model + domain (§8); each reviewer gets overview + routed observations + tool signals + memories | opus·xhigh + sonnet | reviewing | findings |
 | 5 | **Dedup + check** — JS dedup by `file:line`, then **one** agent filters false positives ("review if true") | JS + opus · high | findings>0, difficulty ≥ 2 | confirmed findings |
 | 6 | **Decide** — `APPROVE` iff **0 findings AND 0 unresolved threads**, else `REQUEST_CHANGES` | JS | always | verdict |
@@ -157,7 +157,10 @@ Run in parallel after the overview is posted; their observations feed the squad 
 3. **Memories & docs lookup** — reads this repo's memory slice + the repo's `./docs` to inform
    the squad.
 4. **Static tools** (haiku tool-runner) — `analysis-tools.ts` (semgrep / lizard); signals are
-   leads, not verdicts.
+   leads, not verdicts. It also surfaces, read DETERMINISTICALLY (not relayed through the synthesis
+   agent): the learning-loop **outcome rows** (`outcomes.jsonl`) for Phase-2 calibration, and the
+   **prior file-keyed signals** (`misses.jsonl` + `found-issues.md` matched against the changed files)
+   that the brain turns into scrutiny-raising routed observations — the recall lever.
 
 The two web researchers replace the old offline recon scanners; they are the same two roles
 (ai-slop / general) but **web-backed**.
@@ -195,9 +198,11 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   carries the id). **Deterministic** (no LLM reads comment text — an injected old comment can't steer a
   verdict) and **idempotent** (a re-harvest replaces a PR's rows by `id+pr`; trimmed to a rolling
   window). The slice fetch/push is shared with the review pipeline via `scripts/memory-slice.sh`.
-  **Read back (learning-loop Phase 2):** the gather `memDocs` agent loads these rows and the brain
+  **Read back (learning-loop Phase 2):** the gather **tool-runner** (`analysis-tools.ts`) reads these rows
+  DETERMINISTICALLY — not relayed through the synthesis LLM agent (the spine principle) — and the brain
   computes per-domain **calibration** from them (Laplace-smoothed rates, min-sample gate `n≥8`,
-  `gone`/unknown excluded) — injected as a visible block into `projectContext` (→ squad + check). The
+  `gone`/unknown excluded; `dismissed` counts toward the sample but neither rate — a concession, not a
+  precision win) — injected as a visible block into `projectContext` (→ squad + check). The
   signal is asymmetric (`fixed` acts at a lower bar than `ignored`) and floored (it never instructs
   silence; the check still confirms every provable finding). This is the loop closing: outcomes →
   calibration → next review.
@@ -205,8 +210,18 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   harvester: when a merged **fix/revert/hotfix** PR touches a file an **earlier** PR was reviewed
   **clean** on, a row `{file, ref_pr, clean_pr, at}` records a candidate false-negative — the **recall**
   counterweight to the precision signal (so "fewer findings" can't masquerade as "better"). A
-  deliberately weak prior (most fix PRs aren't fixing a bot miss); v1 captures the metric, feeding it
-  into per-domain scrutiny is a deferred follow-up.
+  deliberately weak prior (most fix PRs aren't fixing a bot miss). **It is now fed back (the recall
+  lever):** on a later review, a changed file present in `misses.jsonl` — or recorded in
+  `found-issues.md` — becomes a **routed observation** (via the deterministic tool-runner →
+  `domainForFile` routing) that re-scrutinizes that file in its domain reviewer. **Additive only** — it
+  raises scrutiny, never suppresses.
+- **Cross-repo `_global/` layer (additive).** A single `_global/learnings/{lessons,watch-patterns}.md`
+  subtree shared by ALL slices: general, repo-agnostic review lessons + recurring patterns to WATCH FOR.
+  Every review reads it (staged read-only into `.cc-global/` via `fetch_global`, in a dir SEPARATE from
+  the repo slice so `push_slice` can't copy it into a per-repo subtree) IN ADDITION to its own slice, so
+  a lesson learned on repo A can inform repo B. **Additive-only — never a global suppression** (a wrong
+  one would silence true findings in *every* repo, with no backstop). Written ONLY by the maintenance
+  job's opt-in consolidation pass, never by a review.
 - **Overview comment** — user-facing walkthrough + the first-vs-re-run marker; **edited in place** on
   re-runs. It is the **primary** first-vs-re-run signal, but **not the only one**: if a user deletes
   it, the review-state marker still proves the PR was reviewed, so the bot takes the re-run path
@@ -228,9 +243,20 @@ status into standing themes, dropping superseded entries), with a rough ~25-bull
 **never drops a still-valid `known_pattern`** (that would cause re-flagging). Memory is read back into
 every review (gather phase) — the project treats it as load-bearing, not disposable.
 
+**Periodic maintenance (`.github/workflows/cc-review-memory-maintenance.yml`, runs IN cc-review).** A
+scheduled + manually-dispatchable job maintains **every slice at once** on a checkout of the memory
+branch (one job, no per-consumer install): (1) **deterministic, zero-quota cleanup**
+(`scripts/memory-maintenance.mjs`) — prunes old `pr-<N>/` dirs beyond a retention cap (dead weight after
+merge; never deleted on PR close → unbounded growth), trims the jsonl logs to their window, and writes a
+`MAINTENANCE.md` health report (per-slice sizes, per-domain verdict tallies, a ⚠ for any domain trending
+to silence or unread miss candidates); and (2) an **opt-in** single-agent pass (`consolidate=true`) that
+merges per-repo lessons into the additive `_global/` layer (generalised, deduped, capped, never a
+suppression). The **cron runs only part (1)** (no quota); consolidation is a manual dispatch (it spends
+Claude quota, so it stays off by default). Defaults to a dry run unless `apply=true`.
+
 **Cold-start backfill (learning-loop Phase 3, `.claude/workflows/backfill-memory.mjs`).** On a repo's
 **first-ever** review the slice is empty, so `ci-run.sh` invokes the backfill workflow *before* the
-review: it harvests the last `N` merged PRs (default 5, `BACKFILL_N`; one agent per PR) and synthesises
+review: it harvests the last `N` merged PRs (default 3, `BACKFILL_N`; one agent per PR) and synthesises
 **additive** priors — conventions, recurring-issue themes, review-culture notes — into `MEMORY.md` +
 `learnings/{lessons,found-issues}.md`, so the first review isn't cold. It is **additive-only**: it
 **never** writes `known-patterns.md` or any suppression rule, because a wrong suppression silences true

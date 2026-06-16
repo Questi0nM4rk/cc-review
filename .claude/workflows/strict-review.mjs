@@ -49,6 +49,10 @@ const LANG_REFS = `${BOT}/lang-refs`;
 const SCRATCH = ".cc-run";
 // Per-PR review-state marker + learnings live under the staged memory dir (GHA pushes it).
 const MEM = ".cc-memory";
+// Cross-repo ADDITIVE memory layer (general lessons / watch-patterns), staged read-only in a SEPARATE
+// dir so it's never pushed into a per-repo slice. Every review reads it IN ADDITION to MEM; only the
+// maintenance/consolidation job writes it. Absent until the first consolidation runs.
+const GLOBAL = ".cc-global";
 // Hidden marker on the overview comment — MUST match scripts/review-platform.ts. Its presence
 // on the PR is the deterministic first-vs-re-run signal (SPEC §4).
 const OVERVIEW_MARKER = "<!-- cc-review:overview -->";
@@ -86,8 +90,11 @@ const SIG = { filesPct: 0.25, addedLines: 150, borderline: 0.2 };
 // Calibration thresholds (learning-loop Phase 2). minOutcomes is a MINIMUM-SAMPLE GATE: a domain emits
 // NO calibration line until it has this many scored outcomes (known verdicts only) in the window —
 // below it, the rate is noise and we stay silent. fixedHigh/ignoredHigh are the (Laplace-smoothed) rate
-// thresholds. The signal is ASYMMETRIC by design: `fixed`/`dismissed` are CODE-VERIFIED ground truth, so
-// acting on them ("keep flagging") is safe at a LOWER bar; `ignored` is a friction-contaminated WEAK
+// thresholds. The signal is ASYMMETRIC by design: `fixed` is CODE-VERIFIED ground truth (code was
+// corrected), so acting on it ("keep flagging") is safe at a LOWER bar. `dismissed` is also deterministic
+// but a CONCESSION (the bot accepted the finding as intentional + wrote a known_pattern that now
+// suppresses it) — no precision signal, so it's denominator-only, boosting neither rate. `ignored` is a
+// friction-contaminated WEAK
 // prior (the author merged without engaging — maybe noise, maybe just busy), so nudging skepticism up
 // must demand MORE evidence → ignoredHigh > fixedHigh. The ignored nudge is also FLOORED: it only ever
 // says "a slightly higher bar — still flag what you can prove"; calibration can never instruct silence,
@@ -170,12 +177,15 @@ const MEMDOCS_SCHEMA = {
   properties: {
     notes: { type: "array", items: { type: "string" } },
     known_patterns: { type: "array", items: { type: "string" } },
-    // Phase 2: the per-finding outcome rows from learnings/outcomes.jsonl, verbatim (domain+verdict) —
-    // the brain computes per-domain calibration from these in JS.
-    outcomes: { type: "array", items: { type: "object", required: ["domain", "verdict"], properties: { domain: { type: "string" }, verdict: { type: "string" } } } },
   },
 };
-const TOOLS_SCHEMA = { type: "object", required: ["available", "findings"], properties: { available: { type: "array", items: { type: "string" } }, findings: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, file: { type: "string" }, line: { type: "integer" }, message: { type: "string" } } } } } };
+// `outcomes` rides on the tool-runner result (Phase 2): the per-finding outcome rows from
+// learnings/outcomes.jsonl, read DETERMINISTICALLY by analysis-tools.ts (not relayed through a
+// synthesis LLM). The brain computes per-domain calibration from these in JS.
+// `priorSignals` (file-keyed recall) also rides the tool-runner result: changed files an earlier review
+// MISSED a bug on (misses.jsonl) or logged a confirmed issue on (found-issues.md), matched deterministically.
+const PRIOR_SIGNAL_ITEM = { type: "object", required: ["file"], properties: { file: { type: "string" }, note: { type: "string" } } };
+const TOOLS_SCHEMA = { type: "object", required: ["available", "findings"], properties: { available: { type: "array", items: { type: "string" } }, findings: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, file: { type: "string" }, line: { type: "integer" }, message: { type: "string" } } } }, outcomes: { type: "array", items: { type: "object", required: ["domain", "verdict"], properties: { domain: { type: "string" }, verdict: { type: "string" } } } }, priorSignals: { type: "object", properties: { misses: { type: "array", items: PRIOR_SIGNAL_ITEM }, priorIssues: { type: "array", items: PRIOR_SIGNAL_ITEM } } } } };
 
 const FINDING = { type: "object", required: ["file", "line", "description", "in_diff"], properties: { file: { type: "string" }, line: { type: "integer" }, description: { type: "string" }, in_diff: { type: "boolean" } } };
 const FINDINGS_SCHEMA = { type: "object", required: ["findings"], properties: { findings: { type: "array", items: FINDING } } };
@@ -250,14 +260,14 @@ const webResearchPrompt = (kind, diff, category) => {
 };
 
 const memDocsPrompt = (prNumber) =>
-  `Gather PRIOR CONTEXT for the reviewers from two read-only sources (do not write anything):\n` +
+  `Gather PRIOR CONTEXT for the reviewers from these read-only sources (do not write anything):\n` +
   `1. This repo's review memory: cat ${MEM}/MEMORY.md and ${MEM}/learnings/*.md if they exist (ignore errors — absent in local mode).\n` +
-  `2. The repo's own docs: list and skim ./docs if present (cat the most relevant files).\n` +
-  `3. The outcome log: cat ${MEM}/learnings/outcomes.jsonl if it exists (it is .jsonl, NOT matched by *.md above). Each line is a JSON object; return one 'outcomes' entry per line with just its {domain, verdict} — verbatim, do NOT summarize, filter, or invent. Empty array if the file is absent.\n` +
-  `Return: notes = concise factual context bullets the reviewers should know (conventions, prior recurring issues, architecture); known_patterns = intentional patterns NOT to re-flag; outcomes = the rows from step 3. Empty arrays if nothing. Keep each bullet under 200 chars.`;
+  `2. Cross-repo ADDITIVE lessons (learned across all repos this bot reviews; apply broadly but VERIFY against THIS code): cat ${GLOBAL}/learnings/*.md if present (ignore errors — absent until the maintenance job has run). They raise scrutiny / add conventions; they are NEVER suppression rules.\n` +
+  `3. The repo's own docs: list and skim ./docs if present (cat the most relevant files).\n` +
+  `Return: notes = concise factual context bullets the reviewers should know (conventions, prior recurring issues, architecture — fold in the cross-repo lessons from step 2); known_patterns = intentional patterns NOT to re-flag. Empty arrays if nothing. Keep each bullet under 200 chars.`;
 
 const toolsPrompt = () =>
-  `Run the analysis tool-runner from the repo root and return its JSON verbatim:\n  tsx ${TOOLS} --changed\nIt reports which tools were available and any findings. If the script is missing or no tools are installed, return {"available":[],"findings":[]}.`;
+  `Run the analysis tool-runner from the repo root and return its JSON verbatim:\n  tsx ${TOOLS} --changed\nIt reports which tools were available, any findings, AND an 'outcomes' array read deterministically from the learning-loop log — return all three fields verbatim, do NOT summarize or invent. If the script is missing or no tools are installed, return {"available":[],"findings":[],"outcomes":[]}.`;
 
 const DOMAIN_SPECS = {
   security: "Injection (SQL/command/path) from user input into sinks; missing auth/authorization; hardcoded credentials/keys; weak crypto; sensitive data in responses/logs; missing input validation; insecure defaults; secret values in source. Read context before flagging a missing auth check.",
@@ -304,19 +314,30 @@ const reviewPostPrompt = (ctx) =>
   `2. resolve threads: ${JSON.stringify(ctx.resolve_ids)} — for each: tsx ${ADAPTER} resolve --pr ${ctx.pr_number} --thread <id>\n` +
   `3. post the review: write this payload to ${SCRATCH}/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload ${SCRATCH}/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nConfirm what you posted in one line.`;
 
-const markerPrompt = (prNumber, head_sha, files, event) =>
-  `Persist the per-PR review-state marker so a later re-run's significant-change check can diff against what was last reviewed (this is run OUTPUT, not learned memory). The dir ${MEM}/pr-${prNumber} already exists. Using a cat-heredoc only (no mkdir/printf/tee/Write), write this file VERBATIM, overwriting any prior copy:\n` +
-  `  cat > ${MEM}/pr-${prNumber}/review-state.json <<'EOF'\n${JSON.stringify({ reviewed_head_sha: head_sha, reviewed_file_count: files.length, event, files }, null, 2)}\nEOF\n` +
-  `If the dir does not exist (local mode), say 'no marker dir (local mode)' and do nothing. Confirm in one line.`;
-
-// Phase-0 instrumentation log: APPEND one JSONL row per posted inline finding (run OUTPUT, not learned
-// memory) so a later phase can record each finding's fate at merge. Append (cat >>), never overwrite —
-// re-runs add only their new findings, so the file accumulates the union across runs. The rows are
-// pre-serialized; the heredoc body + EOF terminator MUST sit at column 0 (an indented EOF never closes).
-const findingsLogPrompt = (prNumber, rows) =>
-  `Append the per-finding instrumentation log (run OUTPUT, not learned memory). The dir ${MEM}/pr-${prNumber} already exists. Using a cat-heredoc ONLY (no mkdir/printf/tee/Write/Edit), APPEND the lines below VERBATIM to ${MEM}/pr-${prNumber}/findings.jsonl (one JSON object per line; create the file if absent, never overwrite existing lines). Copy the heredoc EXACTLY — the body lines and the EOF terminator are at column 0 (no leading spaces):\n` +
-  `cat >> ${MEM}/pr-${prNumber}/findings.jsonl <<'EOF'\n${rows.map((r) => JSON.stringify(r)).join("\n")}\nEOF\n` +
-  `If the dir does not exist (local mode), say 'no marker dir (local mode)' and do nothing. Confirm in one line.`;
+// Post-phase deterministic writes, merged into ONE agent turn (was two: review-state marker +
+// Phase-0 findings log) to halve the Post-phase agent calls. Both are run OUTPUT (not learned memory)
+// and pure cat-heredocs — the orchestrator holds the EXACT bytes, the agent only transcribes them, so
+// nothing is laundered through LLM judgment. Each write keeps its own confirmation line so a
+// mid-sequence failure still names which file failed. review-state.json (OVERWRITE) lets a re-run's
+// significant-change check diff against what was last reviewed; findings.jsonl (APPEND, only when there
+// ARE inline findings — one JSON row per posted inline finding, the union across re-runs) lets a later
+// phase record each finding's fate at merge. Heredoc bodies + EOF terminators MUST sit at column 0
+// (an indented EOF never closes — the #57/Phase-0 trap).
+const postOpsPrompt = (prNumber, head_sha, files, event, findingRows) => {
+  const marker = JSON.stringify({ reviewed_head_sha: head_sha, reviewed_file_count: files.length, event, files }, null, 2);
+  let p =
+    `Persist this run's OUTPUT files under ${MEM}/pr-${prNumber} (the dir already exists). Use cat-heredocs ONLY (no mkdir/printf/tee/Write/Edit). If the dir does NOT exist (local mode), say 'no marker dir (local mode)' and do nothing.\n\n` +
+    `1. OVERWRITE the review-state marker VERBATIM (a later re-run's significant-change check diffs against it):\n` +
+    `cat > ${MEM}/pr-${prNumber}/review-state.json <<'EOF'\n${marker}\nEOF\n` +
+    `Confirm this write in one line.\n`;
+  if (findingRows.length) {
+    p +=
+      `\n2. APPEND the per-finding instrumentation rows VERBATIM (one JSON object per line; create the file if absent, NEVER overwrite existing lines). Copy the heredoc EXACTLY — body lines and the EOF terminator at column 0:\n` +
+      `cat >> ${MEM}/pr-${prNumber}/findings.jsonl <<'EOF'\n${findingRows.map((r) => JSON.stringify(r)).join("\n")}\nEOF\n` +
+      `Confirm this write in one line.\n`;
+  }
+  return p;
+};
 
 const memoryPrompt = (ctx) =>
   `Maintain durable project-review memory under ./${MEM} — a directory in your CURRENT working directory you ARE allowed to write to (the GHA stages it; the sandbox blocks /tmp). First run 'cat ${MEM}/MEMORY.md': if it errors, ${MEM} is absent (local dry-run) — do nothing and say 'no memory dir (local mode)'. If it succeeds you are in bot mode and MUST curate it.\n` +
@@ -435,26 +456,27 @@ function mergeLangs(fromFiles, configLangs) {
 }
 // Turn harvested per-finding outcomes (Phase 1) into per-domain calibration lines (Phase 2). Pure +
 // deterministic (no clock — the window is Phase 1's file trim). 'gone' rows carry no signal and are
-// excluded; 'open-but-acted' counts toward the denominator but neither numerator (the author engaged
-// but didn't fix — it dilutes both rates, conservatively). Rates are Laplace-smoothed ((k+1)/(n+2))
+// excluded; 'open-but-acted' AND 'dismissed' count toward the denominator but neither numerator —
+// 'open-but-acted' = engaged-but-unfixed; 'dismissed' = bot conceded it was intentional (now a
+// known_pattern), so neither is a precision win and both dilute the rates. Laplace-smoothed ((k+1)/(n+2))
 // so small samples pull toward neutral instead of swinging to 0%/100%. A domain under minOutcomes
 // emits nothing (the min-sample gate). Returns an array of human-readable lines (possibly empty).
 function computeCalibration(outcomes, opts = CALIB) {
   const byDomain = new Map();
   for (const o of (outcomes || [])) {
-    // Canonicalize the domain (the rows relay through the memDocs LLM agent, so a value may be an
-    // alias — 'perf', 'data_access', 'Security' — or the harvester's 'unknown' placeholder).
-    // normalizeDomain coalesces aliases to one DOMAIN_KEY and returns null for non-domains, which we
-    // drop — otherwise one domain's sample fragments across buckets, each falling under the gate and
-    // silencing calibration that should fire.
+    // Canonicalize the domain. Rows now arrive from the deterministic tsx tool-runner (no LLM relay):
+    // a value is a canonical DOMAIN_KEY or the harvester's 'unknown' placeholder. normalizeDomain still
+    // coalesces any alias to one DOMAIN_KEY and drops non-domains (else one domain's sample fragments
+    // across buckets, each under the gate, silencing calibration that should fire) — and the SAME helper
+    // canonicalizes LLM-authored observation suggested_domain elsewhere, where aliases ARE real.
     const d = normalizeDomain(o && o.domain);
     const v = o && o.verdict;
     if (!d || !CALIB_SCORED.has(v)) continue; // drop non-domain keys + 'gone'/unrecognized verdicts
     if (!byDomain.has(d)) byDomain.set(d, { fixed: 0, ignored: 0, scored: 0 });
     const c = byDomain.get(d);
     c.scored++;
-    if (v === "fixed" || v === "dismissed") c.fixed++;
-    else if (v === "ignored") c.ignored++; // 'open-but-acted' falls through: in scored, neither bucket
+    if (v === "fixed") c.fixed++; // 'fixed' = code corrected — the only precision win in the numerator
+    else if (v === "ignored") c.ignored++; // 'dismissed'/'open-but-acted' fall through: in scored, neither bucket
   }
   const lines = [];
   for (const [d, c] of byDomain) {
@@ -491,6 +513,17 @@ function normalizeDomain(d) {
   if (k === "perf") return "performance";
   if (["quality", "structure", "design"].includes(k)) return "architecture";
   return null;
+}
+
+// Best-guess review domain for a file path, by the same signals relevanceScores uses. Routes a
+// prior-signal (miss / prior issue) observation to the relevant reviewer; defaults to architecture.
+function domainForFile(f) {
+  const s = String(f || "");
+  if (/(auth|login|token|crypto|password|secret|jwt|oauth|session|cookie)/i.test(s)) return "security";
+  if (/(repositor|migration|entit|dbcontext|\.sql$|schema)/i.test(s)) return "data-access";
+  if (/(controller|endpoint|route|api|dto|handler)/i.test(s)) return "api";
+  if (/(test|spec|__tests__)/i.test(s)) return "testing";
+  return "architecture";
 }
 
 function relevanceScores(observations, files, category) {
@@ -622,6 +655,15 @@ function difficultyFloor(files, diff) {
   return { floor, reasons, risk };
 }
 
+// A doc-only change (no risk signal, trivial size floor, every changed path a doc/markdown file) does
+// not need an opus holistic walkthrough — sonnet writes the overview fine, at a fraction of the cost.
+// Pairs with difficultyFloor: fl.risk (security/sink/SQL/migration) keeps opus for a "docs" PR that
+// actually touches dangerous code; files.length>0 stops an empty list making .every() vacuously true.
+function isDocOnlyChange(files, fl) {
+  return !fl.risk && fl.floor <= 1 && files.length > 0 &&
+    files.every((f) => /\.(md|txt|rst|adoc)$/i.test(f) || /(^|\/)docs?\//i.test(f));
+}
+
 // Defensive: holistic agents sometimes HTML-escape the mermaid (--&gt; instead of -->),
 // which breaks GitHub rendering. Un-escape entities INSIDE the ```mermaid fence only.
 function fixMermaid(md) {
@@ -736,23 +778,47 @@ async function runDeepReview(difficulty, category, overviewBrief, doGather, high
   let memNotes = [];
   let memKnown = [];
   let outcomes = []; // Phase 1 finding-outcome rows (Phase 2 calibration source)
+  let priorSignals = { misses: [], priorIssues: [] }; // file-keyed recall signals (the loop's recall lever)
 
   if (doGather) {
     phase("Gather");
-    const results = (await parallel([
-      () => agent(webResearchPrompt("ai-slop", diff, category), { schema: RESEARCH_SCHEMA, model: "sonnet", label: "research:ai-slop", phase: "Gather" }),
-      () => agent(webResearchPrompt("general", diff, category), { schema: RESEARCH_SCHEMA, model: "sonnet", label: "research:general", phase: "Gather" }),
+    // Web research earns its two sonnet calls only on a diff big enough to plausibly lean on a
+    // library/API the reviewers don't already know. On a tiny, non-risky diff it returns nothing
+    // actionable — skip it (cost). The risk veto forces it back on: highStakes is difficultyFloor's
+    // security/sink/SQL/migration flag, so a dangerous one-liner is never under-researched. memDocs
+    // (memory + Phase-2 calibration) and the haiku tool-runner ALWAYS run.
+    const skipWeb = !highStakes && addedLineCount(diff) < 50 && files.length <= 2;
+    if (skipWeb) log("gather: skipping web research (small, non-risky diff) — memory + tools still run");
+    const gatherTasks = [
       () => agent(memDocsPrompt(prNumber), { schema: MEMDOCS_SCHEMA, model: "sonnet", label: "memories+docs", phase: "Gather" }),
       () => agent(toolsPrompt(), { schema: TOOLS_SCHEMA, model: "haiku", label: "tools", phase: "Gather" }),
-    ])).filter(Boolean);
+    ];
+    if (!skipWeb) gatherTasks.unshift(
+      () => agent(webResearchPrompt("ai-slop", diff, category), { schema: RESEARCH_SCHEMA, model: "sonnet", label: "research:ai-slop", phase: "Gather" }),
+      () => agent(webResearchPrompt("general", diff, category), { schema: RESEARCH_SCHEMA, model: "sonnet", label: "research:general", phase: "Gather" }),
+    );
+    const results = (await parallel(gatherTasks)).filter(Boolean);
     for (const r of results) {
       if (r.observations) observations.push(...r.observations);
       if (r.findings) toolFindings = r.findings;
       if (r.notes) memNotes.push(...r.notes);
       if (r.known_patterns) memKnown.push(...r.known_patterns);
       if (r.outcomes) outcomes.push(...r.outcomes);
+      if (r.priorSignals) priorSignals = r.priorSignals;
     }
   }
+
+  // Recall lever (Core A+B): convert file-keyed prior signals into ROUTED OBSERVATIONS so they ride the
+  // existing pipeline — ranked by relevance (boosting the file's domain in pickSquad), partitioned to
+  // that domain's reviewer, and verified against the code like any other lead. A file an earlier review
+  // MISSED a bug on, or logged a confirmed issue on, gets re-scrutinized this time. Purely ADDITIVE — it
+  // only adds scrutiny, never suppresses. Empty when there was no gather (difficulty 1).
+  const ps = priorSignals || { misses: [], priorIssues: [] };
+  const priorObs = [
+    ...(ps.misses || []).map((m) => ({ pattern: "a bug was MISSED on this file by an earlier review", location: { file: m.file, line: 0 }, note: `${m.note || "previously missed"} — scrutinize this file harder; verify no regression or overlooked issue`, suggested_domain: domainForFile(m.file) })),
+    ...(ps.priorIssues || []).map((p) => ({ pattern: "this file had a confirmed issue in a prior review", location: { file: p.file, line: 0 }, note: `prior issue: ${p.note || "see memory"} — verify it has not regressed`, suggested_domain: domainForFile(p.file) })),
+  ];
+  if (priorObs.length) { observations.push(...priorObs); log(`recall: ${(ps.misses || []).length} miss + ${(ps.priorIssues || []).length} prior-issue signal(s) routed to reviewers`); }
 
   const projectContext = buildProjectContext(config, memNotes, memKnown, outcomes);
   if (outcomes.length) log(`calibration: ${outcomes.length} outcome row(s) loaded for per-domain rate math`);
@@ -804,9 +870,12 @@ let reviewed = false; // whether a deep review (squad) ran this run
 if (!isRerun) {
   // ---- FIRST REVIEW -------------------------------------------------------
   phase("Holistic");
-  const holistic = await agent(holisticPrompt(diff, priorThreads.length), { schema: HOLISTIC_SCHEMA, model: "opus", effort: "medium", label: "holistic", phase: "Holistic" });
-  const rated = holistic?.difficulty || 3;
+  // Compute the deterministic floor FIRST so it also picks the holistic model: a doc-only PR needs no
+  // opus walkthrough (sonnet is plenty), but fl.risk keeps opus for a "docs" PR that touches code.
   const fl = difficultyFloor(files, diff);
+  const docOnly = isDocOnlyChange(files, fl);
+  const holistic = await agent(holisticPrompt(diff, priorThreads.length), { schema: HOLISTIC_SCHEMA, model: docOnly ? "sonnet" : "opus", effort: docOnly ? undefined : "medium", label: "holistic", phase: "Holistic" });
+  const rated = holistic?.difficulty || 3;
   difficulty = Math.max(rated, fl.floor); // deterministic floor under the stochastic rating (#14)
   category = holistic?.category || "other";
   overviewMd = fixMermaid(holistic?.overview_markdown || "");
@@ -836,12 +905,13 @@ if (!isRerun) {
   knownPatterns = threadActions.map((t) => t.known_pattern).filter(Boolean);
   stillOpen = priorThreads.length - resolveIds.length;
 
-  // Re-orient (cheap opus pass) to get difficulty/category for the review. The overview is
-  // only EDITED IN PLACE when the change is significant; minor re-runs leave it untouched.
+  // Re-orient to get difficulty/category for the review. The overview is only EDITED IN PLACE when the
+  // change is significant; minor re-runs leave it untouched. Doc-only re-runs use sonnet (see first-review note).
   phase("Holistic");
-  const holistic = await agent(holisticPrompt(diff, priorThreads.length), { schema: HOLISTIC_SCHEMA, model: "opus", effort: "medium", label: "holistic-rerun", phase: "Holistic" });
-  const rated = holistic?.difficulty || 3;
   const fl = difficultyFloor(files, diff);
+  const docOnly = isDocOnlyChange(files, fl);
+  const holistic = await agent(holisticPrompt(diff, priorThreads.length), { schema: HOLISTIC_SCHEMA, model: docOnly ? "sonnet" : "opus", effort: docOnly ? undefined : "medium", label: "holistic-rerun", phase: "Holistic" });
+  const rated = holistic?.difficulty || 3;
   difficulty = Math.max(rated, fl.floor); // deterministic floor under the stochastic rating (#14)
   category = holistic?.category || "other";
   overviewMd = fixMermaid(holistic?.overview_markdown || "");
@@ -900,15 +970,11 @@ let posted = null;
 if (post) {
   phase("Post");
   posted = await agent(reviewPostPrompt({ repo, pr_number: prNumber, resolve_ids: resolveIds, replies, payload }), { model: "sonnet", label: "post-review", phase: "Post" });
-  // Stamp the review-state marker (head sha + file count) for the next re-run's
-  // significant-change check. Reaching Post means a review ran (answer-mode and the
-  // rerun-blocked gate return earlier), so this stamps on every posted review — first or
-  // re-run. The old write was mis-gated behind gather, so it skipped difficulty-1 first
-  // reviews and minor re-runs, leaving the sig-change baseline stale.
-  await agent(markerPrompt(prNumber, headSha, files, event), { model: "sonnet", label: "review-state", phase: "Post" });
-  // Append the per-finding instrumentation log (Phase 0). Only when there are inline findings —
-  // APPROVE runs and out-of-diff-only runs leave it untouched.
-  if (findingRows.length) await agent(findingsLogPrompt(prNumber, findingRows), { model: "sonnet", label: "findings-log", phase: "Post" });
+  // One merged agent turn writes both deterministic run-output files: the review-state marker (always —
+  // reaching Post means a review ran, since answer-mode and the rerun-blocked gate return earlier, so
+  // every posted review re-stamps the sig-change baseline) and the Phase-0 findings log (only when there
+  // are inline findings — APPROVE / out-of-diff-only runs leave it untouched). Was two sonnet calls.
+  await agent(postOpsPrompt(prNumber, headSha, files, event, findingRows), { model: "sonnet", label: "post-ops", phase: "Post" });
 }
 
 // ---- Memory -----------------------------------------------------------------

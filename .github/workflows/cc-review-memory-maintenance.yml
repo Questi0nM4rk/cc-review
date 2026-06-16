@@ -1,0 +1,99 @@
+# ============================================================================
+#  cc-review memory maintenance — runs IN cc-review (the memory branch lives here,
+#  so one job maintains EVERY consumer slice at once; no per-consumer install).
+#
+#  Two parts, both on a checkout of the `claude-reviewer/memory` branch:
+#   1. Deterministic cleanup + health report (memory-maintenance.mjs) — ZERO Claude
+#      quota. Prunes old pr-<N>/ dirs (the unbounded-growth leak), trims the jsonl
+#      logs to their window, writes MAINTENANCE.md (per-slice health + recall flags).
+#   2. (OPT-IN) Cross-repo consolidation — ONE claude -p agent merges per-repo
+#      lessons into the ADDITIVE `_global/` layer every review reads. Spends Claude
+#      quota, so it is OFF by default and runs only on a manual dispatch with
+#      consolidate=true. It NEVER writes suppression rules (a wrong global suppress
+#      would silence true findings in EVERY repo) — additive context only.
+#  Then commits + pushes the maintained branch.
+# ============================================================================
+name: cc-review memory maintenance
+
+on:
+  schedule:
+    - cron: "17 4 * * 0"        # weekly, Sun 04:17 UTC — deterministic cleanup only (no quota spend)
+  workflow_dispatch:
+    inputs:
+      keep_pr:
+        description: "pr-<N> dirs to retain per slice"
+        default: "25"
+      apply:
+        description: "apply cleanup writes (false = dry-run, report only)"
+        default: "true"
+      consolidate:
+        description: "run the LLM cross-repo consolidation into _global (SPENDS Claude quota)"
+        default: "false"
+
+permissions:
+  contents: write
+
+# Never let two maintenance runs (a cron + a manual dispatch) race on the push.
+concurrency:
+  group: cc-review-memory-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the memory branch
+        uses: actions/checkout@v6
+        with:
+          ref: claude-reviewer/memory
+          path: mem
+          fetch-depth: 1
+      - name: Checkout the bot scripts (main)
+        uses: actions/checkout@v6
+        with:
+          path: bot
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Deterministic cleanup + health report (no quota)
+        run: |
+          set -uo pipefail
+          KEEP="${{ github.event.inputs.keep_pr || '25' }}"
+          APPLY="${{ github.event.inputs.apply || 'true' }}"
+          FLAG=""; [ "$APPLY" = "true" ] && FLAG="--apply"
+          node bot/scripts/memory-maintenance.mjs --root mem --keep-pr "$KEEP" $FLAG
+
+      - name: Consolidate cross-repo lessons into _global (additive, opt-in)
+        if: github.event.inputs.consolidate == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -uo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash
+          export PATH="$HOME/.local/bin:$PATH"
+          # The agent cannot mkdir under the sandbox — pre-create the additive layer's dir.
+          mkdir -p mem/_global/learnings
+          PROMPT="You maintain the cc-review CROSS-REPO memory. Read every consumer slice's lessons and confirmed issues — Glob 'mem/*/*/learnings/lessons.md' and 'mem/*/*/learnings/found-issues.md' and cat them. Synthesise GENERAL, repo-agnostic learnings that transfer across projects into TWO additive files, using a cat-heredoc ONLY (the dir mem/_global/learnings already exists; do NOT mkdir/printf/tee/Write):
+          - mem/_global/learnings/lessons.md      durable cross-project review lessons (broadly-applicable conventions, recurring mistakes worth remembering everywhere).
+          - mem/_global/learnings/watch-patterns.md   recurring issue patterns to WATCH FOR / raise scrutiny on across repos.
+          HARD RULES: (1) ADDITIVE ONLY — every entry RAISES scrutiny or adds context; NEVER write a suppression, a 'do not flag', or a known-pattern rule (a wrong GLOBAL suppression silences true findings in EVERY repo, with no backstop). (2) GENERALISE — strip repo-specific names/paths/ids; keep only what transfers. (3) DEDUP + CONSOLIDATE — first cat any existing mem/_global/learnings/*.md and MERGE into it, do not pile on; cap each file at ~25 bullets. (4) If nothing is genuinely cross-cutting, leave the files unchanged and say so. Confirm in one line what you wrote."
+          claude -p "$PROMPT" \
+            --model claude-sonnet-4-6 \
+            --output-format stream-json --verbose \
+            --allowedTools "Read,Glob,Bash(cat:*),Bash(ls:*)" \
+            --dangerously-skip-permissions \
+            --add-dir "$PWD/mem" \
+            | tee /tmp/consolidate.jsonl || true
+
+      - name: Commit + push the maintained memory branch
+        run: |
+          set -uo pipefail
+          cd mem
+          git config user.name "cc-review[bot]"
+          git config user.email "cc-review[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "no memory changes — nothing to push"; exit 0; fi
+          git commit -q -m "chore(memory): scheduled maintenance"
+          # Best-effort: a concurrent review push can reject this; the next run (idempotent cleanup) retries.
+          git push origin "HEAD:claude-reviewer/memory" || echo "push rejected (likely a concurrent review push) — next run retries"

@@ -23,8 +23,8 @@ const SENTINEL = "// === END PURE HELPERS (test-extraction boundary) ===";
 const EXPORTS = [
   "changedFiles", "addedLineCount", "sanitizeContext", "untrusted", "dropAlreadyThreaded", "selectReplies",
   "langsForDiff", "globToRe", "applyIgnorePaths", "mergeLangs", "buildProjectContext",
-  "normalizeDomain", "relevanceScores", "pickSquad", "dedup", "stampHash",
-  "buildPayload", "difficultyPath", "difficultyFloor", "fixMermaid", "sigChangePrefilter", "resolveSig",
+  "normalizeDomain", "domainForFile", "relevanceScores", "pickSquad", "dedup", "stampHash",
+  "buildPayload", "difficultyPath", "difficultyFloor", "isDocOnlyChange", "fixMermaid", "sigChangePrefilter", "resolveSig",
   "fnv1a32", "normalizeForId", "findingId", "inlineFindings", "computeCalibration",
 ];
 
@@ -194,6 +194,16 @@ test("normalizeDomain resolves aliases and rejects junk", () => {
   assert.equal(H.normalizeDomain("design"), "architecture");
   assert.equal(H.normalizeDomain("security"), "security");
   assert.equal(H.normalizeDomain("nonsense"), null);
+});
+test("domainForFile routes a path to the relevant review domain (recall-signal routing)", () => {
+  assert.equal(H.domainForFile("src/Auth/TokenService.cs"), "security");
+  assert.equal(H.domainForFile("db/migrations/0007_add.sql"), "data-access");
+  assert.equal(H.domainForFile("api/controllers/OrdersController.cs"), "api");
+  assert.equal(H.domainForFile("tests/order_spec.ts"), "testing");
+  assert.equal(H.domainForFile("src/util/helpers.ts"), "architecture"); // default
+  assert.equal(H.domainForFile(""), "architecture");
+  // security wins when multiple signals are present (it's checked first, highest stakes)
+  assert.equal(H.domainForFile("api/auth/login.ts"), "security");
 });
 
 // ---------------------------------------------------------------------------
@@ -407,6 +417,13 @@ test("computeCalibration: 'open-but-acted' dilutes the ignored-rate below thresh
   const lines = H.computeCalibration([...rows("testing", "ignored", 4), ...rows("testing", "open-but-acted", 4)]);
   assert.deepEqual(lines, []);
 });
+test("computeCalibration: 'dismissed' no longer boosts the fixed-rate — denominator-only like open-but-acted", () => {
+  // 7 dismissed (bot CONCEDED the finding was intentional) + 1 fixed = scored 8; fixedRate=(1+1)/(8+2)=0.2
+  // < fixedHigh(0.7) -> no line. Regression guard: if dismissed still counted toward fixed it would be
+  // (7+1+1)/10=0.9 >= 0.7 and wrongly emit 'keep flagging'. A concession is not a precision win.
+  const lines = H.computeCalibration([...rows("security", "dismissed", 7), ...rows("security", "fixed", 1)]);
+  assert.deepEqual(lines, []);
+});
 test("computeCalibration: a high-FIXED domain is never depressed (known-debt finding doesn't suppress)", () => {
   // 7 fixed + 1 ignored: scored=8, fixedRate=(7+1)/(8+2)=0.8 >= fixedHigh(0.7) -> 'keep flagging', not a bar-raise
   const lines = H.computeCalibration([...rows("security", "fixed", 7), ...rows("security", "ignored", 1)]);
@@ -546,6 +563,34 @@ test("difficultyFloor: risk flag set for risk signals, NOT for size-only (vetoes
   assert.equal(H.difficultyFloor(["db/0007.sql"], tinyDiff(2)).risk, true);          // migration
   assert.equal(H.difficultyFloor(["a", "b", "c", "d"], tinyDiff(5)).risk, false);    // size-only -> not a risk veto
   assert.equal(H.difficultyFloor(["README.md"], tinyDiff(1)).risk, false);           // trivial
+});
+
+// ---------------------------------------------------------------------------
+// isDocOnlyChange  (Cut 3 — sonnet holistic on doc-only PRs)
+// ---------------------------------------------------------------------------
+test("isDocOnlyChange: all-doc paths, no risk, trivial floor -> true", () => {
+  const files = ["README.md", "docs/guide.md", "CHANGELOG.txt"];
+  const fl = H.difficultyFloor(files, "+++ b/README.md\n+a doc line\n");
+  assert.equal(H.isDocOnlyChange(files, fl), true);
+});
+test("isDocOnlyChange: a non-.md file UNDER docs/ still counts as doc-only", () => {
+  const files = ["docs/pipeline-diagram.html"];
+  const fl = H.difficultyFloor(files, "+++ b/docs/pipeline-diagram.html\n+<p>x</p>\n");
+  assert.equal(H.isDocOnlyChange(files, fl), true);
+});
+test("isDocOnlyChange: any code file -> false (keeps opus)", () => {
+  const files = ["README.md", "src/app.ts"];
+  const fl = H.difficultyFloor(files, "+++ b/src/app.ts\n+const x = 1;\n");
+  assert.equal(H.isDocOnlyChange(files, fl), false);
+});
+test("isDocOnlyChange: a docs path that trips the risk veto -> false (a 'docs' change near dangerous surface keeps opus)", () => {
+  const files = ["docs/auth-token-guide.md"];
+  const fl = H.difficultyFloor(files, "+++ b/docs/auth-token-guide.md\n+notes\n");
+  assert.equal(fl.risk, true);                       // 'auth'/'token' in the path -> risk flag
+  assert.equal(H.isDocOnlyChange(files, fl), false);
+});
+test("isDocOnlyChange: empty file list -> false (never vacuously true)", () => {
+  assert.equal(H.isDocOnlyChange([], { risk: false, floor: 1 }), false);
 });
 
 // ---------------------------------------------------------------------------
