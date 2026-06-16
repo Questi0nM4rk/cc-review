@@ -109,7 +109,7 @@ fi
 # One-shot CI diagnostics: what permission-relevant config does claude ACTUALLY see on this runner?
 # (We can't reproduce the runner's "Bypass permissions mode was disabled by settings" locally, so dump
 # ground truth.) To stderr → the GHA run log. Cheap; safe to leave (no secrets in these files).
-if [ "$SELFTEST" != "1" ] && [ "${AGENTAPI_DIAG:-1}" = "1" ]; then
+if [ "$SELFTEST" != "1" ] && [ "${AGENTAPI_DIAG:-0}" = "1" ]; then
   {
     echo "── agentapi-claude config diagnostics ──"
     echo "claude bin: $(command -v claude 2>/dev/null)  version: $(claude --version 2>/dev/null)"
