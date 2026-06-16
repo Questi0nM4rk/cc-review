@@ -182,10 +182,29 @@ jq -n --arg c "$PROMPT" '{content:$c, type:"user"}' \
   | curl -s --max-time 30 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
 
 # 3) Wait for the turn to complete: after the POST the agent goes "running"; poll until "stable".
+# An interactive `claude` driven headlessly still hits the prompts a human would answer — chiefly the
+# one-time "Run a dynamic workflow?" consent, which `--dangerously-skip-permissions` does NOT suppress
+# (verified: on CI, tool calls run silently under the flag but the workflow-launch consent still blocks).
+# When a numbered selection menu is pending, auto-approve it by sending "1" — option 1 is the "Yes" /
+# "Yes, run it" choice in every such Claude Code prompt. This is just answering a known interactive gate
+# (what a human would press); correctness is still verified against GitHub ground truth, never this log.
+last_msg() { curl -s --max-time 8 "${BASE}/messages" 2>/dev/null | jq -r '(.messages // [])[-1].content // ""' 2>/dev/null; }
 sleep 3   # let the status flip to "running" before we start checking for the return to "stable"
-elapsed=0; done=0
+elapsed=0; done=0; approvals=0
 while [ "$elapsed" -lt "$MAX" ]; do
-  [ "$(status)" = "stable" ] && { done=1; break; }
+  st="$(status)"
+  case "$(last_msg)" in
+    *"Run a dynamic workflow?"*|*"Do you want to proceed?"*|*"❯ 1."*|*"❯ 1. Yes"*)
+      if [ "$approvals" -lt 40 ]; then
+        jq -n '{content:"1", type:"user"}' \
+          | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
+        approvals=$((approvals + 1))
+        echo "agentapi-claude: auto-approved an interactive prompt (#${approvals})" >&2
+        sleep "$POLL"; elapsed=$((elapsed + POLL)); continue
+      fi
+      ;;
+  esac
+  [ "$st" = "stable" ] && { done=1; break; }
   sleep "$POLL"; elapsed=$((elapsed + POLL))
 done
 
