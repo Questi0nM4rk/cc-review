@@ -4,7 +4,21 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 
 ## Runtime & invocation
 
-- **Workflows run headless via `claude -p` + the Workflow tool by `scriptPath`.** Empirically verified.
+- **⚡ SUPERSEDED INVOCATION (2026-06-16): the bot drives the brain through an INTERACTIVE `claude`
+  session in tmux, NOT `claude -p`.** Empirically (observed 5×): `claude -p` (headless/print) bills the
+  **headless/SDK** pool — each review moved the **weekly** `/usage` ~3% while the **5-hour** session
+  window didn't budge. Anthropic split interactive vs headless/SDK billing (~June 15 2026), so an
+  interactive session draws from the abundant 5-hour rolling bucket. Fix: **`scripts/tmux-claude.sh`** runs
+  `claude` interactively in a tmux pane, pastes the prompt as ONE bracketed paste, and detects completion
+  via a **sentinel file** the agent writes as its last action (`echo done > <file>`) — NOT by scraping the
+  TUI (no machine-readable "done"). The `capture-pane` transcript is a best-effort log; correctness is
+  verified against **GitHub ground truth** (review/comment count rose), never by parsing it. `--selftest`
+  drives `bash` as a stand-in to validate the plumbing with no claude and no quota. Every entry script
+  uses it; **no `claude -p` remains in the project.** ⇒ The notes immediately below about `claude -p`,
+  `--allowedTools`, `--output-format stream-json`, and the session.jsonl gate are **HISTORICAL** — the
+  `scriptPath`/Workflow-tool facts still hold, but the invocation + the stream-json gate are superseded.
+
+- **Workflows run via the Workflow tool by `scriptPath`** (historically through `claude -p`; now interactive). Empirically verified.
   - `claude -p "/my-workflow"` → **"Unknown command"**. User-invoked slash commands are interactive-only.
   - `Workflow` tool with `name: "my-workflow"` → **"not found"**. Project `.claude/workflows/*.mjs` are NOT auto-registered (only built-ins like `deep-research`, `code-review` are).
   - `Workflow` tool with `scriptPath: "<abs path>"` → **runs and returns**. This is the only headless path.

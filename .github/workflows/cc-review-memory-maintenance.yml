@@ -6,7 +6,7 @@
 #   1. Deterministic cleanup + health report (memory-maintenance.mjs) — ZERO Claude
 #      quota. Prunes old pr-<N>/ dirs (the unbounded-growth leak), trims the jsonl
 #      logs to their window, writes MAINTENANCE.md (per-slice health + recall flags).
-#   2. (OPT-IN) Cross-repo consolidation — ONE claude -p agent merges per-repo
+#   2. (OPT-IN) Cross-repo consolidation — ONE interactive claude agent (tmux) merges per-repo
 #      lessons into the ADDITIVE `_global/` layer every review reads. Spends Claude
 #      quota, so it is OFF by default and runs only on a manual dispatch with
 #      consolidate=true. It NEVER writes suppression rules (a wrong global suppress
@@ -72,19 +72,21 @@ jobs:
           set -uo pipefail
           curl -fsSL https://claude.ai/install.sh | bash
           export PATH="$HOME/.local/bin:$PATH"
+          command -v tmux >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq tmux >/dev/null 2>&1 || true; }
           # The agent cannot mkdir under the sandbox — pre-create the additive layer's dir.
           mkdir -p mem/_global/learnings
-          PROMPT="You maintain the cc-review CROSS-REPO memory. Read every consumer slice's lessons and confirmed issues — Glob 'mem/*/*/learnings/lessons.md' and 'mem/*/*/learnings/found-issues.md' and cat them. Synthesise GENERAL, repo-agnostic learnings that transfer across projects into TWO additive files, using a cat-heredoc ONLY (the dir mem/_global/learnings already exists; do NOT mkdir/printf/tee/Write):
+          cat > /tmp/consolidate-prompt.txt <<'PROMPT'
+          You maintain the cc-review CROSS-REPO memory. Read every consumer slice's lessons and confirmed issues — Glob 'mem/*/*/learnings/lessons.md' and 'mem/*/*/learnings/found-issues.md' and cat them. Synthesise GENERAL, repo-agnostic learnings that transfer across projects into TWO additive files, using a cat-heredoc ONLY (the dir mem/_global/learnings already exists; do NOT mkdir/printf/tee/Write):
           - mem/_global/learnings/lessons.md      durable cross-project review lessons (broadly-applicable conventions, recurring mistakes worth remembering everywhere).
           - mem/_global/learnings/watch-patterns.md   recurring issue patterns to WATCH FOR / raise scrutiny on across repos.
-          HARD RULES: (1) ADDITIVE ONLY — every entry RAISES scrutiny or adds context; NEVER write a suppression, a 'do not flag', or a known-pattern rule (a wrong GLOBAL suppression silences true findings in EVERY repo, with no backstop). (2) GENERALISE — strip repo-specific names/paths/ids; keep only what transfers. (3) DEDUP + CONSOLIDATE — first cat any existing mem/_global/learnings/*.md and MERGE into it, do not pile on; cap each file at ~25 bullets. (4) If nothing is genuinely cross-cutting, leave the files unchanged and say so. Confirm in one line what you wrote."
-          claude -p "$PROMPT" \
-            --model claude-sonnet-4-6 \
-            --output-format stream-json --verbose \
-            --allowedTools "Read,Glob,Bash(cat:*),Bash(ls:*)" \
-            --dangerously-skip-permissions \
-            --add-dir "$PWD/mem" \
-            | tee /tmp/consolidate.jsonl || true
+          HARD RULES: (1) ADDITIVE ONLY — every entry RAISES scrutiny or adds context; NEVER write a suppression, a 'do not flag', or a known-pattern rule (a wrong GLOBAL suppression silences true findings in EVERY repo, with no backstop). (2) GENERALISE — strip repo-specific names/paths/ids; keep only what transfers. (3) DEDUP + CONSOLIDATE — first cat any existing mem/_global/learnings/*.md and MERGE into it, do not pile on; cap each file at ~25 bullets. (4) If nothing is genuinely cross-cutting, leave the files unchanged and say so. Confirm in one line what you wrote.
+          PROMPT
+          # Interactive (5h bucket), not `claude -p`. Best-effort; a non-zero exit just means no consolidation this run.
+          bot/scripts/tmux-claude.sh --prompt-file /tmp/consolidate-prompt.txt --out /tmp/consolidate-transcript.txt \
+            --claude-arg --model --claude-arg claude-sonnet-4-6 \
+            --claude-arg --dangerously-skip-permissions \
+            --claude-arg --add-dir --claude-arg "$PWD/mem" \
+            || echo "::warning::cross-repo consolidation did not complete cleanly this run"
 
       - name: Commit + push the maintained memory branch
         run: |

@@ -2,7 +2,7 @@
 #  ci — tests for the cc-review bot REPO ITSELF (not a consumer's PRs).
 #  Runs the deterministic-helper unit tests + the brain syntax gate on every
 #  push to main and every PR. Cheap, no secrets, no Claude usage — distinct
-#  from cc-review.yml (which reviews consumer PRs via `claude -p`).
+#  from cc-review.yml (which reviews consumer PRs via an interactive claude session in tmux).
 # ============================================================================
 name: ci
 

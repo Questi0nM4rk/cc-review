@@ -17,7 +17,8 @@ An automated, zero-tolerance PR/MR reviewer powered by Claude Code. The entire r
 is **one self-contained workflow** (`.claude/workflows/strict-review.mjs`) — no marketplace,
 no submodule. Two modes:
 
-- **GitHub bot mode** — headless, in a consumer repo's GitHub Actions, from a GitHub App identity.
+- **GitHub bot mode** — in a consumer repo's GitHub Actions, from a GitHub App identity. The brain runs
+  through an **interactive `claude` session in tmux** (not headless `claude -p`) — see §2 for why.
 - **GitLab local mode** — run interactively on your machine against a MR. **Posts to the MR but never pushes a branch.**
 
 Review philosophy: **one tier — every finding is a required change; approve only when there are zero findings and zero unresolved threads.** No severity labels, no "nits".
@@ -26,25 +27,40 @@ Review philosophy: **one tier — every finding is a required change; approve on
 
 ## 2. Runtime
 
-Invoked through the Claude Code **Workflow tool by `scriptPath`** (empirically verified — not
-a `/slash` command, not the Agent SDK):
+Invoked through the Claude Code **Workflow tool by `scriptPath`** (empirically verified — not a `/slash`
+command, not the Agent SDK), driven through an **INTERACTIVE `claude` session in tmux** (via
+`scripts/tmux-claude.sh`), **not `claude -p`**:
 
 ```bash
-claude -p "Use the Workflow tool with scriptPath '$CC_REVIEW_BOT_DIR/.claude/workflows/strict-review.mjs'. Report its return value." \
-  --allowedTools "Workflow,Bash,Read,Write,Grep,Glob,WebSearch,WebFetch" \
-  --dangerously-skip-permissions \
-  --output-format stream-json | tee "$RUN_DIR/session.jsonl"
+# tmux-claude.sh starts `claude` interactively in a tmux pane, pastes the prompt as ONE bracketed
+# paste, and polls a completion SENTINEL the agent writes as its last action (no TUI scraping).
+printf '%s' "$PROMPT" > "$RUN_DIR/prompt.txt"
+scripts/tmux-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/transcript.txt" \
+  --claude-arg --model --claude-arg claude-sonnet-4-6 \
+  --claude-arg --dangerously-skip-permissions \
+  --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" --claude-arg --add-dir --claude-arg /tmp
 ```
 
-> Use `--dangerously-skip-permissions`, **not** `--permission-mode bypassPermissions`: the latter is
-> silently downgraded (to default/auto) in a headless run, which then blocks the agent's tool calls.
+> **Why interactive, not `claude -p`:** `claude -p` (headless/print) bills the headless/SDK pool —
+> empirically it moves the **weekly** `/usage` ~3% per run while the **5-hour** session window doesn't
+> budge. An interactive session draws from the abundant 5-hour rolling bucket, so the bot drives the
+> brain through tmux to stop burning the scarce pool.
+>
+> **Completion is a sentinel file, not screen-scraping:** the prompt tells the agent to `echo done > <file>`
+> as its very last action; the driver polls for it (deterministic, TUI-version-independent). The
+> `capture-pane` transcript is a best-effort log only — correctness is verified against **GitHub ground
+> truth**, never by parsing it. Validate the plumbing with `scripts/tmux-claude.sh --selftest` (drives
+> `bash` as a stand-in — no claude, no quota).
+>
+> Use `--dangerously-skip-permissions` so the agent's tools run without prompts; no `--allowedTools`
+> allowlist is passed in interactive mode (skip-perms covers it).
 
-- Sub-agents do **not** inherit env vars and are **filesystem-sandboxed to `$GITHUB_WORKSPACE`**
-  (no `/tmp` writes). Inputs arrive via files the GHA stages (`/tmp/cc-input.json`,
-  `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt` — reads from `/tmp` are fine); anything an agent
-  must **write** goes under the workspace (`.cc-memory/`, `.cc-run/`). Dirs are pre-created by
-  a GHA step; agents append with `cat` heredoc only (`mkdir/printf/tee` are not on the Bash
-  allowlist). See `docs/lessons-learned.md`.
+- Sub-agents do **not** inherit env vars, so inputs arrive via files the runner stages
+  (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the
+  workspace** (`.cc-memory/`, `.cc-run/`; the read-only `.cc-global/` is staged there too) with `cat`
+  heredocs into **pre-created** dirs — a convention proven in the old headless/allowlist era and
+  **retained across the tmux switch** (harmless and robust; interactive + `--dangerously-skip-permissions`
+  no longer passes a Bash allowlist). See `docs/lessons-learned.md`.
 
 ---
 

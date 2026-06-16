@@ -82,13 +82,11 @@ PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: $
 # GitLab path: glab only (no gh). Posting is via the adapter's gl.* verbs.
 # --dangerously-skip-permissions, NOT --permission-mode bypassPermissions: the latter is silently
 # downgraded (to default/auto), which would block the agent's tool calls in a headless run.
-claude -p "$PROMPT" \
-  --model claude-sonnet-4-6 \
-  --output-format stream-json --verbose \
-  --allowedTools "Workflow,Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
-  --dangerously-skip-permissions \
-  --add-dir /tmp \
-  | tee /tmp/run/session.jsonl >/dev/null
+printf '%s' "$PROMPT" > /tmp/run/prompt.txt
+"$(dirname "${BASH_SOURCE[0]}")/tmux-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
+  --claude-arg --model --claude-arg claude-sonnet-4-6 \
+  --claude-arg --dangerously-skip-permissions \
+  --claude-arg --add-dir --claude-arg /tmp
 
-echo "----- workflow result -----"
-jq -r 'select(.type=="result") | .result' /tmp/run/session.jsonl 2>/dev/null || cat /tmp/run/session.jsonl
+echo "----- workflow transcript (posting happens via glab inside the run; verify on the MR) -----"
+cat /tmp/run/transcript.txt 2>/dev/null || echo "(no transcript captured)"

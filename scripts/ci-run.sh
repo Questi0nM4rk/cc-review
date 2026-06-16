@@ -91,19 +91,17 @@ if [ "$BACKFILL_NEEDED" = "1" ]; then
   # string; validating here keeps a malformed value out of the agent prompt (and out of the log line).
   if printf '%s' "$BF_PRS" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
     echo "backfill: priming memory for ${REPO} from merged PRs ${BF_PRS}"
+    command -v tmux >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq tmux >/dev/null 2>&1 || true; }
     BF_PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/backfill-memory.mjs' and args { bot_dir: '${CC_REVIEW_BOT_DIR}', repo: '${REPO}', prs: ${BF_PRS} }. Run it to completion and report its return value verbatim as JSON."
-    claude -p "$BF_PROMPT" \
-      --model claude-sonnet-4-6 \
-      --output-format stream-json --verbose \
-      --allowedTools "Workflow,Bash(gh:*),Bash(git:*),Bash(tsx:*),Bash(node:*),Bash(cat:*),Read,Grep,Glob" \
-      --dangerously-skip-permissions \
-      --add-dir "$CC_REVIEW_BOT_DIR" --add-dir /tmp \
-      | tee /tmp/run/backfill.jsonl || true
-    # Best-effort, but a SILENT backfill failure must not masquerade as a clean review failure: if it
-    # produced no result object it likely hit a usage/quota limit, which would then also kill the
-    # review below — surface it so the root cause isn't a diagnostic black hole (cf. #51).
-    [ -z "$(jq -c 'select(.type=="result")' /tmp/run/backfill.jsonl 2>/dev/null | tail -1)" ] \
-      && echo "::warning::cc-review backfill did not complete cleanly (possible usage/quota limit); proceeding to review without primed memory"
+    printf '%s' "$BF_PROMPT" > /tmp/run/bf-prompt.txt
+    # Interactive (5h bucket), not `claude -p`. Best-effort: a non-zero exit (no completion sentinel) is
+    # surfaced as a warning, not a failure — a cold review is the safe fallback (cf. #51).
+    "$CC_REVIEW_BOT_DIR/scripts/tmux-claude.sh" --prompt-file /tmp/run/bf-prompt.txt --out /tmp/run/backfill-transcript.txt \
+      --claude-arg --model --claude-arg claude-sonnet-4-6 \
+      --claude-arg --dangerously-skip-permissions \
+      --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
+      --claude-arg --add-dir --claude-arg /tmp \
+      || echo "::warning::cc-review backfill did not complete cleanly (possible usage/quota limit); proceeding to review without primed memory"
   else
     echo "backfill: no merged PRs to learn from (or gh list failed) — skipping; will retry next run"
   fi
@@ -140,95 +138,44 @@ BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
 # only govern WHICH tools run and approval, NOT which paths they may touch. Without it the agent can't
 # read the bot clone ($CC_REVIEW_BOT_DIR) or the /tmp-staged inputs (cc-input.json, pr-diff.txt) — it
 # then non-deterministically refuses ("won't run a script I can't read"), giving flaky red checks (#49).
-claude -p "$PROMPT" \
-  --model claude-sonnet-4-6 \
-  --output-format stream-json --verbose \
-  --allowedTools "Workflow,Bash(gh:*),Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
-  --dangerously-skip-permissions \
-  --add-dir "$CC_REVIEW_BOT_DIR" --add-dir /tmp \
-  | tee /tmp/run/session.jsonl || true
-jq -r 'select(.type=="result") | .result' /tmp/run/session.jsonl > /tmp/run/result.txt 2>/dev/null || true
+# Drive the brain through an INTERACTIVE claude session in tmux (5-hour bucket) — NOT `claude -p`,
+# which bills the scarce headless/SDK pool (~3% of weekly /usage per run). Completion is signalled by a
+# sentinel file the agent writes as its last action (tmux-claude.sh polls it); a non-zero exit = it
+# never signalled (timed out / died). Correctness is verified below against GitHub ground truth, so the
+# messy TUI transcript is only a best-effort log — we never parse it for the verdict.
+command -v tmux >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq tmux >/dev/null 2>&1 || true; }
+printf '%s' "$PROMPT" > /tmp/run/prompt.txt
+"$CC_REVIEW_BOT_DIR/scripts/tmux-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
+  --claude-arg --model --claude-arg claude-sonnet-4-6 \
+  --claude-arg --dangerously-skip-permissions \
+  --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
+  --claude-arg --add-dir --claude-arg /tmp
+TMUX_RC=$?
 cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true
 
 # ── Everything below ALWAYS runs (even if the review died mid-way) ───────────
 RUN_FAILED=0
-
-# 4) Surface an incomplete / quota-failed run LOUDLY (keyed on session content —
-# a quota-kill leaves no final result object, the more robust signal).
-SESSION=/tmp/run/session.jsonl
-RESULT=$(jq -c 'select(.type=="result")' "$SESSION" 2>/dev/null | tail -1)
-IS_ERR=$(printf '%s' "$RESULT" | jq -r '.is_error // empty' 2>/dev/null)
 REASON=""
-if [ ! -s "$SESSION" ] || [ -z "$RESULT" ]; then
-  REASON="the run ended without a final result (died mid-review — often a usage/quota limit)"
-elif [ "$IS_ERR" = "true" ]; then
-  REASON="the run reported an error result"
+
+# 4) Completion: tmux-claude.sh exits 0 ONLY when the agent wrote the completion sentinel (its last act
+# after the Workflow returns). A non-zero exit = timed out or died mid-review — often a usage limit.
+if [ "$TMUX_RC" -ne 0 ]; then
+  REASON="the review did not signal completion (timed out or died mid-review — often a usage/quota limit)"
 fi
 
-# 4b) A claude run that ends "cleanly" can still hide an ABORTED review: the brain returns
-# {ok:false,reason} on any fetch/adapter failure (BEFORE it posts anything). Without this check
-# that abort produced a green check with nothing posted — a broken review indistinguishable from
-# a clean approval (#46). Enforce the invariant: a green check ⇒ a review ran AND posted. Parse the
-# brain's return value (verbatim JSON in result.txt) and fail loudly otherwise.
-if [ -z "$REASON" ]; then
-  WF=$(node -e '
-    const fs=require("fs");
-    let hay=""; try{hay=fs.readFileSync("/tmp/run/result.txt","utf8");}catch{}
-    let best=null;
-    for(let i=0;i<hay.length;i++){
-      if(hay[i]!=="{")continue;
-      let depth=0,inStr=false,esc=false;
-      for(let j=i;j<hay.length;j++){
-        const c=hay[j];
-        if(esc){esc=false;continue;}
-        if(c==="\\"){esc=true;continue;}
-        if(c==="\"")inStr=!inStr;
-        if(inStr)continue;
-        if(c==="{")depth++;
-        else if(c==="}"){depth--;if(depth===0){
-          try{const o=JSON.parse(hay.slice(i,j+1));
-            if(o&&typeof o.ok==="boolean"&&(!best||("mode"in o)||("reason"in o)||("event"in o)))best=o;
-          }catch{}
-          break;
-        }}
-      }
-    }
-    process.stdout.write(best?JSON.stringify({ok:best.ok,posted:!(best.posted==null||best.posted===false),reason:String(best.reason||""),mode:String(best.mode||""),event:String(best.event||"")}):"");
-  ' 2>/dev/null)
-  if [ -z "$WF" ]; then
-    REASON="the review produced no parseable result object — cannot confirm a review was posted"
-  else
-    WF_OK=$(printf '%s' "$WF" | jq -r '.ok' 2>/dev/null)
-    WF_POSTED=$(printf '%s' "$WF" | jq -r '.posted' 2>/dev/null)
-    WF_REASON=$(printf '%s' "$WF" | jq -r '.reason' 2>/dev/null)
-    WF_MODE=$(printf '%s' "$WF" | jq -r '.mode' 2>/dev/null)
-    WF_EVENT=$(printf '%s' "$WF" | jq -r '.event' 2>/dev/null)
-    if [ "$WF_OK" != "true" ]; then
-      REASON="the review aborted before posting${WF_REASON:+ — $WF_REASON}"
-    elif [ "$CC_POST" = "1" ] && [ "$WF_POSTED" != "true" ]; then
-      REASON="the review ran (${WF_MODE:-unknown mode}) but posted nothing despite post being requested"
-    elif [ "$CC_POST" = "1" ]; then
-      # 4c) Don't TRUST the brain's self-reported 'posted' — VERIFY it landed on GitHub. The brain
-      # sets 'posted' from the post agent's own one-line confirmation, which it writes even when the
-      # API call failed (e.g. a 422, or the silent wrong-path no-op). Re-count the bot's reviews /
-      # comments and require an actual increase vs the pre-run snapshot. Review modes (first/rerun)
-      # always submit a review; answer / rerun-blocked post an issue comment. If a snapshot errored
-      # we skip (degrade to trusting the brain) rather than false-fail on a transient query glitch.
-      case "$WF_MODE" in
-        first|rerun)
-          AFTER_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
-          if [ "$BEFORE_REVIEWS" != "ERR" ] && [ "$AFTER_REVIEWS" != "ERR" ] && [ "${AFTER_REVIEWS:-0}" -le "${BEFORE_REVIEWS:-0}" ] 2>/dev/null; then
-            REASON="the brain reported a ${WF_MODE} review (${WF_EVENT:-?}) but no new cc-review review appeared on PR #${PR_NUMBER} — the post silently failed (self-report not trusted)"
-          fi
-          ;;
-        answer|rerun-blocked)
-          AFTER_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
-          if [ "$BEFORE_COMMENTS" != "ERR" ] && [ "$AFTER_COMMENTS" != "ERR" ] && [ "${AFTER_COMMENTS:-0}" -le "${BEFORE_COMMENTS:-0}" ] 2>/dev/null; then
-            REASON="the brain reported posting (${WF_MODE}) but no new cc-review comment appeared on PR #${PR_NUMBER}"
-          fi
-          ;;
-      esac
-    fi
+# 4b) Verify against GitHub GROUND TRUTH, never a self-report (the spine principle — and the TUI gives us
+# no parseable return anyway): when posting was requested, SOMETHING must have landed — a review
+# (first/rerun) or an issue comment (overview / answer / rerun-blocked). If BOTH snapshots are readable
+# and NEITHER count rose, the post silently failed. A snapshot error degrades to trusting the run (skip),
+# not a false fail.
+if [ -z "$REASON" ] && [ "$CC_POST" = "1" ]; then
+  AFTER_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
+  AFTER_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
+  if [ "$BEFORE_REVIEWS" != "ERR" ] && [ "$AFTER_REVIEWS" != "ERR" ] \
+     && [ "$BEFORE_COMMENTS" != "ERR" ] && [ "$AFTER_COMMENTS" != "ERR" ] \
+     && [ "${AFTER_REVIEWS:-0}" -le "${BEFORE_REVIEWS:-0}" ] \
+     && [ "${AFTER_COMMENTS:-0}" -le "${BEFORE_COMMENTS:-0}" ] 2>/dev/null; then
+    REASON="the run completed but no new cc-review review or comment appeared on PR #${PR_NUMBER} — the post silently failed (verified against GitHub, not a self-report)"
   fi
 fi
 

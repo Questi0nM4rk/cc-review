@@ -139,14 +139,12 @@ PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}'"
 [[ -n "$WF_ARGS" ]] && PROMPT="${PROMPT} and args ${WF_ARGS}"
 PROMPT="${PROMPT}. Run it to completion and report its return value verbatim as JSON. It reads PR number, repo, post-flag from /tmp/cc-input.json, the diff from /tmp/pr-diff.txt, and project config from .cc-review.yaml."
 
-echo "running workflow headless via claude -p (post=false)…"
-claude -p "$PROMPT" \
-  --model claude-sonnet-4-6 \
-  --output-format stream-json --verbose \
-  --allowedTools "Workflow,Bash(gh:*),Bash(glab:*),Bash(git:*),Bash(tsx:*),Bash(npx:*),Bash(node:*),Bash(cat:*),Read,Write,Edit,Grep,Glob,WebSearch,WebFetch" \
-  --dangerously-skip-permissions \
-  --add-dir /tmp \
-  | tee /tmp/run/session.jsonl >/dev/null
+echo "running workflow via an interactive claude session in tmux (post=false)…"
+printf '%s' "$PROMPT" > /tmp/run/prompt.txt
+"$(dirname "${BASH_SOURCE[0]}")/tmux-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
+  --claude-arg --model --claude-arg claude-sonnet-4-6 \
+  --claude-arg --dangerously-skip-permissions \
+  --claude-arg --add-dir --claude-arg /tmp
 
-echo "----- workflow result -----"
-jq -r 'select(.type=="result") | .result' /tmp/run/session.jsonl 2>/dev/null || cat /tmp/run/session.jsonl
+echo "----- workflow transcript -----"
+cat /tmp/run/transcript.txt 2>/dev/null || echo "(no transcript captured)"
