@@ -51,32 +51,40 @@ if ! command -v agentapi >/dev/null 2>&1; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# Pre-seed Claude Code's onboarding/UI state on a fresh runner. Interactive `claude` on a pristine HOME
+# Pre-seed Claude Code's onboarding/UI state on a fresh runner. Interactive `claude` on a fresh HOME
 # blocks on first-run TUI gates (theme picker → trust-folder dialog → --dangerously-skip-permissions
-# confirmation) and so never reaches agentapi's "stable" status — the review then times out. Seed ONLY
-# when no real config exists, so a logged-in dev machine is never touched. Auth is NOT seeded here: it
-# rides on CLAUDE_CODE_OAUTH_TOKEN (a secret), never a committed credential.
-if [ "$SELFTEST" != "1" ] && [ ! -f "$HOME/.claude.json" ]; then
+# confirmation) and so never reaches agentapi's "stable" status — the review then times out.
+# Gate on the SEMANTIC state, not file presence: the claude installer leaves a stub ~/.claude.json
+# WITHOUT hasCompletedOnboarding, so "seed only if the file is absent" never fired. Seed whenever claude
+# is not already onboarded → covers the stub; a logged-in dev machine (hasCompletedOnboarding:true) is
+# untouched. The seed is MERGED over any stub so installer-written keys survive. Auth is NOT seeded
+# here: it rides on CLAUDE_CODE_OAUTH_TOKEN (a secret), never a committed credential.
+if [ "$SELFTEST" != "1" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [ -f "$SCRIPT_DIR/ci-claude.json" ]; then
-    cp "$SCRIPT_DIR/ci-claude.json" "$HOME/.claude.json"
-    # The "trust this folder?" dialog is PER-PROJECT (keyed by the workspace path), not global — the
-    # top-level flag in ci-claude.json can't pre-accept it because the CI path is only known at runtime.
-    # claude inherits this process's CWD, so $PWD is exactly the path it will prompt about: inject a
-    # trusted entry for it (+ each --add-dir path) so claude boots straight past the gate.
+  SEED_FILE="$SCRIPT_DIR/ci-claude.json"
+  CFG="$HOME/.claude.json"
+  if [ -f "$SEED_FILE" ] && ! jq -e '.hasCompletedOnboarding == true' "$CFG" >/dev/null 2>&1; then
+    # The "trust this folder?" dialog is PER-PROJECT (keyed by workspace path), not global — the top-level
+    # flag in the seed can't pre-accept it because the CI path is only known at runtime. claude inherits
+    # this process's CWD, so $PWD is exactly the path it prompts about: inject a trusted entry for it
+    # (+ each --add-dir path) so claude boots straight past the gate.
     TRUST_DIRS=("$PWD"); for ((i=0; i<${#CLAUDE_ARGS[@]}; i++)); do
       [ "${CLAUDE_ARGS[$i]}" = "--add-dir" ] && [ $((i+1)) -lt ${#CLAUDE_ARGS[@]} ] && TRUST_DIRS+=("${CLAUDE_ARGS[$((i+1))]}")
     done
+    existing='{}'; [ -f "$CFG" ] && existing="$(cat "$CFG" 2>/dev/null)"; [ -n "$existing" ] || existing='{}'
     seed_tmp="$(mktemp)"
-    if printf '%s\n' "${TRUST_DIRS[@]}" \
-         | jq -R . | jq -s --slurpfile cfg "$HOME/.claude.json" \
-             'reduce .[] as $d ($cfg[0]; .projects[$d] = {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true, projectOnboardingSeenCount:1, allowedTools:[]})' \
+    # Merge: (installer stub) * (committed seed) → seed wins on onboarding keys, stub keys survive; then
+    # inject the per-project trust entries.
+    if printf '%s\n' "${TRUST_DIRS[@]}" | jq -R . | jq -s \
+         --argjson base "$existing" --slurpfile seed "$SEED_FILE" \
+         '($base * $seed[0]) as $m
+          | reduce .[] as $d ($m; .projects[$d] = {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true, projectOnboardingSeenCount:1, allowedTools:[]})' \
          > "$seed_tmp" 2>/dev/null && [ -s "$seed_tmp" ]; then
-      mv "$seed_tmp" "$HOME/.claude.json"
+      mv "$seed_tmp" "$CFG"
+      echo "agentapi-claude: seeded \$HOME/.claude.json (un-onboarded runner — onboarding done, trusts: ${TRUST_DIRS[*]})" >&2
     else
-      rm -f "$seed_tmp"
+      rm -f "$seed_tmp"; echo "agentapi-claude: WARN onboarding-seed merge failed — claude may hit the onboarding TUI" >&2
     fi
-    echo "agentapi-claude: seeded \$HOME/.claude.json (fresh runner — onboarding done, trusts: ${TRUST_DIRS[*]})" >&2
   fi
 fi
 
