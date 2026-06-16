@@ -51,6 +51,35 @@ if ! command -v agentapi >/dev/null 2>&1; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
+# Pre-seed Claude Code's onboarding/UI state on a fresh runner. Interactive `claude` on a pristine HOME
+# blocks on first-run TUI gates (theme picker → trust-folder dialog → --dangerously-skip-permissions
+# confirmation) and so never reaches agentapi's "stable" status — the review then times out. Seed ONLY
+# when no real config exists, so a logged-in dev machine is never touched. Auth is NOT seeded here: it
+# rides on CLAUDE_CODE_OAUTH_TOKEN (a secret), never a committed credential.
+if [ "$SELFTEST" != "1" ] && [ ! -f "$HOME/.claude.json" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -f "$SCRIPT_DIR/ci-claude.json" ]; then
+    cp "$SCRIPT_DIR/ci-claude.json" "$HOME/.claude.json"
+    # The "trust this folder?" dialog is PER-PROJECT (keyed by the workspace path), not global — the
+    # top-level flag in ci-claude.json can't pre-accept it because the CI path is only known at runtime.
+    # claude inherits this process's CWD, so $PWD is exactly the path it will prompt about: inject a
+    # trusted entry for it (+ each --add-dir path) so claude boots straight past the gate.
+    TRUST_DIRS=("$PWD"); for ((i=0; i<${#CLAUDE_ARGS[@]}; i++)); do
+      [ "${CLAUDE_ARGS[$i]}" = "--add-dir" ] && [ $((i+1)) -lt ${#CLAUDE_ARGS[@]} ] && TRUST_DIRS+=("${CLAUDE_ARGS[$((i+1))]}")
+    done
+    seed_tmp="$(mktemp)"
+    if printf '%s\n' "${TRUST_DIRS[@]}" \
+         | jq -R . | jq -s --slurpfile cfg "$HOME/.claude.json" \
+             'reduce .[] as $d ($cfg[0]; .projects[$d] = {hasTrustDialogAccepted:true, hasCompletedProjectOnboarding:true, projectOnboardingSeenCount:1, allowedTools:[]})' \
+         > "$seed_tmp" 2>/dev/null && [ -s "$seed_tmp" ]; then
+      mv "$seed_tmp" "$HOME/.claude.json"
+    else
+      rm -f "$seed_tmp"
+    fi
+    echo "agentapi-claude: seeded \$HOME/.claude.json (fresh runner — onboarding done, trusts: ${TRUST_DIRS[*]})" >&2
+  fi
+fi
+
 # Build the server command + the prompt.
 if [ "$SELFTEST" = "1" ]; then
   SERVER_CMD=(agentapi server --port "$PORT" -- bash --norc)   # stand-in agent — no claude, no quota
@@ -94,7 +123,16 @@ while [ "$waited" -lt "$READY" ]; do
   [ "$(status)" = "stable" ] && { ready=1; break; }
   sleep 2; waited=$((waited + 2))
 done
-[ "$ready" = "1" ] || { echo "agentapi-claude: agent not ready (no 'stable' status) in ${READY}s" >&2; tail -20 /tmp/agentapi-server.log >&2 2>/dev/null; exit 1; }
+if [ "$ready" != "1" ]; then
+  echo "agentapi-claude: agent not ready (no 'stable' status) in ${READY}s" >&2
+  # Capture whatever screen claude is stuck on (onboarding / trust / login) to --out, so a CI failure is
+  # self-diagnosing in the pushed log branch instead of needing a local repro to see it.
+  curl -s --max-time 8 "${BASE}/messages" 2>/dev/null \
+    | jq -r '(.messages // [])[] | "[\(.role)] \(.content)"' > "$OUT_FILE" 2>/dev/null || true
+  { echo "── claude appears stuck on this screen (GET /messages) ──"; head -40 "$OUT_FILE" 2>/dev/null; \
+    echo "── agentapi server log ──"; tail -20 /tmp/agentapi-server.log 2>/dev/null; } >&2
+  exit 1
+fi
 
 # 2) Send the prompt (jq builds safe JSON regardless of newlines/quotes in the prompt).
 jq -n --arg c "$PROMPT" '{content:$c, type:"user"}' \

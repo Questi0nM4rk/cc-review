@@ -1,0 +1,23 @@
+{
+  "_comment": "Sanitized Claude Code state seed for fresh CI runners. coder/agentapi drives an INTERACTIVE `claude`, which on a pristine HOME blocks on first-run TUI gates (theme picker, trust-folder dialog, --dangerously-skip-permissions confirmation) and so never reaches agentapi's 'stable' status -> the review times out. agentapi-claude.sh copies this to $HOME/.claude.json ONLY when none exists, so the runner looks like an already-onboarded, trusted, settled install and `claude` boots straight to ready. Contains NO secrets and NO PII: auth still rides on the CLAUDE_CODE_OAUTH_TOKEN env secret, never a committed credential. Locally this file is never used (your real ~/.claude.json already exists). If a future claude re-triggers onboarding after a version bump, bump lastOnboardingVersion.",
+  "hasCompletedOnboarding": true,
+  "lastOnboardingVersion": "2.1.178",
+  "theme": "dark",
+  "hasTrustDialogAccepted": true,
+  "bypassPermissionsModeAccepted": true,
+  "autoUpdates": false,
+  "autoConnectIde": false,
+  "hasIdeAutoConnectDialogBeenShown": true,
+  "hasSeenTasksHint": true,
+  "hasSeenStashHint": true,
+  "hasUsedBackslashReturn": true,
+  "shiftEnterKeyBindingInstalled": true,
+  "editorMode": "normal",
+  "numStartups": 999,
+  "sonnet45MigrationComplete": true,
+  "opus45MigrationComplete": true,
+  "opusProMigrationComplete": true,
+  "thinkingMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "officialMarketplaceAutoInstallAttempted": true
+}
