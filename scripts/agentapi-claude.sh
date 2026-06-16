@@ -106,6 +106,23 @@ if [ "$SELFTEST" != "1" ]; then
   fi
 fi
 
+# One-shot CI diagnostics: what permission-relevant config does claude ACTUALLY see on this runner?
+# (We can't reproduce the runner's "Bypass permissions mode was disabled by settings" locally, so dump
+# ground truth.) To stderr → the GHA run log. Cheap; safe to leave (no secrets in these files).
+if [ "$SELFTEST" != "1" ] && [ "${AGENTAPI_DIAG:-1}" = "1" ]; then
+  {
+    echo "── agentapi-claude config diagnostics ──"
+    echo "claude bin: $(command -v claude 2>/dev/null)  version: $(claude --version 2>/dev/null)"
+    echo "HOME=$HOME  CWD=$PWD"
+    echo "effective ~/.claude/settings.json:"; cat "$HOME/.claude/settings.json" 2>/dev/null || echo "  (none)"
+    echo "~/.claude.json permission keys:"; jq -c '{hasCompletedOnboarding, bypassPermissionsModeAccepted, permissions, projectsTrusted: ([.projects // {} | to_entries[] | select(.value.hasTrustDialogAccepted==true) | .key])}' "$HOME/.claude.json" 2>/dev/null || echo "  (none)"
+    for m in /etc/claude-code/managed-settings.json "$HOME/.claude/managed-settings.json" /usr/local/etc/claude-code/managed-settings.json; do
+      [ -f "$m" ] && { echo "MANAGED $m:"; cat "$m"; }
+    done
+    echo "── end diagnostics ──"
+  } >&2
+fi
+
 # Build the server command + the prompt.
 if [ "$SELFTEST" = "1" ]; then
   SERVER_CMD=(agentapi server --port "$PORT" -- bash --norc)   # stand-in agent — no claude, no quota
