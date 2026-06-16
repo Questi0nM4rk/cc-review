@@ -97,7 +97,7 @@ if [ "$BACKFILL_NEEDED" = "1" ]; then
     # stable) is surfaced as a warning, not a failure — a cold review is the safe fallback (cf. #51).
     "$CC_REVIEW_BOT_DIR/scripts/agentapi-claude.sh" --prompt-file /tmp/run/bf-prompt.txt --out /tmp/run/backfill-transcript.txt \
       --claude-arg --model --claude-arg claude-sonnet-4-6 \
-      --claude-arg --permission-mode --claude-arg bypassPermissions \
+      --claude-arg --dangerously-skip-permissions \
       --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
       --claude-arg --add-dir --claude-arg /tmp \
       || echo "::warning::cc-review backfill did not complete cleanly (possible usage/quota limit); proceeding to review without primed memory"
@@ -146,7 +146,7 @@ BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
 printf '%s' "$PROMPT" > /tmp/run/prompt.txt
 "$CC_REVIEW_BOT_DIR/scripts/agentapi-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
-  --claude-arg --permission-mode --claude-arg bypassPermissions \
+  --claude-arg --dangerously-skip-permissions \
   --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
   --claude-arg --add-dir --claude-arg /tmp
 RUN_RC=$?

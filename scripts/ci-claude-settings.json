@@ -1,24 +1,5 @@
 {
-  "permissions": {
-    "defaultMode": "bypassPermissions",
-    "allow": [
-      "Bash",
-      "Read",
-      "Edit",
-      "Write",
-      "Glob",
-      "Grep",
-      "LS",
-      "Task",
-      "WebFetch",
-      "WebSearch",
-      "TodoWrite",
-      "NotebookEdit",
-      "NotebookRead"
-    ]
-  },
-  "skipDangerousModePermissionPrompt": true,
-  "skipWorkflowUsageWarning": true,
   "skipAutoPermissionPrompt": true,
+  "skipWorkflowUsageWarning": true,
   "includeCoAuthoredBy": false
 }
