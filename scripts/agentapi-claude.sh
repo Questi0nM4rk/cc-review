@@ -87,9 +87,11 @@ if [ "$SELFTEST" != "1" ]; then
     fi
 
     # SETTINGS seed (separate file, separate concern): ~/.claude/settings.json governs permission-prompt
-    # BEHAVIOUR. Without skipDangerousModePermissionPrompt, interactive `claude --dangerously-skip-permissions`
-    # prints "Bypass permissions mode was disabled by settings" and then blocks on "Run a dynamic workflow?",
-    # so the brain never runs. Merge our skip-flags into any existing settings (stub-safe), same fresh-runner gate.
+    # BEHAVIOUR. The `--dangerously-skip-permissions` flag the entry scripts pass silences per-tool prompts;
+    # these skip flags (skipAutoPermissionPrompt / skipWorkflowUsageWarning) quiet the remaining startup
+    # noise. (It deliberately does NOT set permissions.defaultMode — that conflicts with the flag.) The one
+    # gate nothing here can suppress is the "Run a dynamic workflow?" consent — the poll loop below answers
+    # it. Merge our flags into any existing settings (stub-safe), same fresh-runner gate.
     SETTINGS_SEED="$SCRIPT_DIR/ci-claude-settings.json"
     if [ -f "$SETTINGS_SEED" ]; then
       mkdir -p "$HOME/.claude"
@@ -194,7 +196,7 @@ elapsed=0; done=0; approvals=0
 while [ "$elapsed" -lt "$MAX" ]; do
   st="$(status)"
   case "$(last_msg)" in
-    *"Run a dynamic workflow?"*|*"Do you want to proceed?"*|*"❯ 1."*|*"❯ 1. Yes"*)
+    *"Run a dynamic workflow?"*|*"Do you want to proceed?"*)
       if [ "$approvals" -lt 40 ]; then
         jq -n '{content:"1", type:"user"}' \
           | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null

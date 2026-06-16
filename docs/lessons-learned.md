@@ -15,12 +15,18 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
   until `stable` (turn complete — the official signal, no TUI scraping), GETs `/messages` as a best-effort
   log. Correctness is verified against **GitHub ground truth** (review/comment count rose), never by parsing
   the log. `--selftest` is a reachability check (a `bash` stand-in can't reach `stable` — agentapi needs a
-  known agent type). **AUTH GOTCHA (cost a live GHA run):** agentapi runs `claude` interactively, which needs
-  a **logged-in** `~/.claude` session — works on a dev machine, but a fresh CI runner has only the headless
-  `CLAUDE_CODE_OAUTH_TOKEN` and interactive `claude` doesn't consume it → claude never reaches `stable`, the
-  driver times out, nothing posts. The 5-hour bucket is itself a logged-in-session property, so this is a
-  LOCAL technique; CI needs staged credentials. Every entry script uses agentapi-claude.sh; **no `claude -p`
-  remains in the project.** ⇒ The notes immediately below about `claude -p`,
+  known agent type). **FRESH-RUNNER BOOT (cost ~8 live GHA rounds; RESOLVED — bot is LIVE on CI):**
+  `CLAUDE_CODE_OAUTH_TOKEN` (an `sk-ant-oat01` subscription token) **does** authenticate interactive
+  `claude` on CI — auth was never the blocker. The blockers were five first-run TUI gates that a logged-in
+  dev machine has pre-cleared (so this is **unreproducible locally** — only a real CI dispatch shows it):
+  (1) theme picker → seed `hasCompletedOnboarding`, gate on the semantic state not file-absence, merge over
+  the installer stub; (2) trust dialog → per-project `hasTrustDialogAccepted` injected at runtime for `$PWD`
+  + `--add-dir` paths; (3) auth → the env token (shows as "Claude API"); (4) per-tool prompts → the
+  `--dangerously-skip-permissions` FLAG (NOT `--permission-mode bypassPermissions`, silently downgraded; and
+  don't set `permissions.defaultMode` — it conflicts with the flag); (5) **"Run a dynamic workflow?" consent
+  → nothing suppresses it in interactive mode, so the invoker auto-answers it with `POST "1"`** in its poll
+  loop. Seeds live in `ci-claude.json` + `ci-claude-settings.json`. Every entry script uses
+  agentapi-claude.sh; **no `claude -p` remains in the project.** ⇒ The notes immediately below about `claude -p`,
   `--allowedTools`, `--output-format stream-json`, and the session.jsonl gate are **HISTORICAL** — the
   `scriptPath`/Workflow-tool facts still hold, but the invocation + the stream-json gate are superseded.
 
@@ -39,7 +45,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 ## Sub-agent sandbox
 
 - **The Read/Write/Edit file tools are sandboxed to the repo workspace** (`/home/runner/work/<repo>/<repo>`). A sub-agent **cannot** Write to `/tmp/...`. Write `/tmp` files with **bash**, not the Write tool.
-- **The GHA `--allowedTools` Bash allowlist binds sub-agents** (even with `--permission-mode bypassPermissions`). `Bash(cat:*)` permits `cat >`/`cat >>`; **`mkdir`, `printf`, `tee` are blocked unless listed.** Don't widen the allowlist for an untrusted-code reviewer — instead **pre-create dirs in the GHA** and have agents append with `cat >>` (an allowed command).
+- **(HISTORICAL — interactive + `--dangerously-skip-permissions` no longer passes `--allowedTools`; only the filesystem sandbox below still binds. The dir-precreation + `cat >>` convention is retained because it's harmless and battle-tested.)** The GHA `--allowedTools` Bash allowlist bound sub-agents (even with `--permission-mode bypassPermissions`). `Bash(cat:*)` permitted `cat >`/`cat >>`; `mkdir`, `printf`, `tee` were blocked unless listed — so agents pre-created dirs in the GHA and appended with `cat >>`.
 
 ## Model tiers
 
@@ -66,7 +72,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 ## CI sandbox + clone constraints (2026-06-03 — verified live on feats)
 
 - **GHA `claude -p` sub-agents are filesystem-sandboxed to `$GITHUB_WORKSPACE`.** Every `/tmp` write is blocked (the agent reports `Output redirection to '/tmp/...' was blocked ... may only write to files in the allowed working directories: '/home/runner/work/<repo>/<repo>'`). `bypassPermissions` does NOT lift the filesystem sandbox. Reads from `/tmp` are fine. So: GHA *steps* (run as the runner) stage inputs in `/tmp`; *agents* must WRITE under the workspace. Memory moved from `/tmp/memory` → `$GITHUB_WORKSPACE/.cc-memory`. Symptom before the fix: memory agent fell back to a false "no memory dir (local mode)" and nothing was recorded.
-- **`--allowedTools` gates Bash to specific commands** (`gh/glab/git/tsx/npx/node/cat`). `mkdir/printf/tee` are unavailable to agents — they write files with `cat` heredoc only, and dirs must be pre-created by a GHA step. A prompt that scares the agent ("everything is blocked") makes it give up; mirror the *working* post pattern instead.
+- **(HISTORICAL — no `--allowedTools` is passed in interactive mode.)** It used to gate Bash to specific commands (`gh/glab/git/tsx/npx/node/cat`); `mkdir/printf/tee` were unavailable, so agents wrote files with `cat` heredoc into pre-created dirs. The `cat`-heredoc-into-pre-created-dirs convention stays (harmless), but the filesystem sandbox — not an allowlist — is the only remaining constraint.
 - **Shallow single-branch clone (`-b rewrite`) has no `origin/<other-branch>` tracking refs.** `push_mem` keyed off `origin/claude-reviewer/memory` (absent) → fell to `git checkout --orphan` → collided with the local branch the pre-fetch created → `fatal: a branch named 'claude-reviewer/memory' already exists`, failing every retry — masked by the retry loop's exit 0 (step showed "success", nothing pushed). Fix: `git fetch origin claude-reviewer/memory` then `git checkout -B claude-reviewer/memory FETCH_HEAD`.
 - **Memory agent must be handed the actual findings, not just counts.** Given only `confirmed:N`, it fabricated entries inferred from its cwd (wrong branch). Pass the confirmed findings (file:line + description) so `found-issues` records the real issues.
 - **gitleaks CLI v8 has no `-q`.** `gitleaks detect ... -q` prints usage and no-ops (the gate silently passes everything). Use `gitleaks detect --source <dir> --no-git --redact --no-banner`; non-zero exit = leaks.
@@ -79,7 +85,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 
 ## Quota
 
-- The GHA's `claude -p` and any concurrent local/interactive Claude share ONE account. Running heavy work in parallel with a CI review can exhaust the session limit mid-run (it did once — the review died in the squad after posting the overview). Sequence runs; stay idle while a GHA review is in flight.
+- The GHA's interactive session and any concurrent local Claude work draw from the **same 5-hour bucket** (one account). Running heavy work in parallel with a CI review can exhaust the session limit mid-run (it did once — the review died in the squad after posting the overview). Sequence runs; stay idle while a GHA review is in flight. (The whole point of the agentapi/interactive switch is to draw the abundant 5h bucket, not the scarce weekly/SDK pool that `claude -p` billed.)
 
 ## Overview / diagram (2026-06-03 — design decisions, not yet implemented)
 
@@ -110,10 +116,12 @@ Hard-won while working the post-rebuild audit backlog (tracking issue #24). Each
   App token and run `scripts/ci-run.sh` — one clone, DRY, runtime-updated. Going public would also fix
   resolution but leaks the `claude-reviewer/memory` branch (private-repo findings). **For a private
   personal-account bot: runtime-cloned script, never a cross-repo `uses:`.**
-- **Key failure-detection on the run ARTIFACT, not a wrapper step's outcome.** `ci-run.sh` decides
-  pass/fail from `session.jsonl` ("no final result object" = died mid-run, usually a quota kill) and
-  exits non-zero itself — a quota-kill leaves no result object regardless, the robust signal.
-  (Historically this also mattered because `steps.<id>.outcome` was unreliable inside the #18 composite.)
+- **Failure-detection on GROUND TRUTH, not a self-report.** `ci-run.sh` decides pass/fail from the
+  agentapi exit code (`$RUN_RC`: 0 only when the turn reached `stable`) **plus** a GitHub ground-truth
+  gate — did the review/comment count on the PR actually rise? A quota-kill / hang leaves the count
+  unchanged regardless of what the transcript claims, so the gate is robust to a lying self-report.
+  (SUPERSEDED: the old headless era parsed `session.jsonl` for "no final result object" — `session.jsonl`
+  is no longer produced or read; the agentapi `stable` exit + ground-truth count is the current signal.)
 - **git's default `core.quotepath=true` C-escapes non-ASCII paths** (`"a/caf\303\251/..."`) in the
   `git diff` fallback → `changedFiles` extracts nothing and inline comments fail to post. Use
   `git -c core.quotepath=false diff` so paths match the `gh` API path's raw UTF-8.

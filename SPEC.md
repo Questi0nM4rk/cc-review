@@ -52,13 +52,15 @@ scripts/agentapi-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/t
 > parsing it. Validate the plumbing with `scripts/agentapi-claude.sh --selftest` (a `bash` stand-in — no
 > claude, no quota; reachability only, since a generic command can't reach `stable`).
 >
-> **Auth caveat (LOCAL vs CI):** agentapi runs `claude` interactively, so it needs a **logged-in** session
-> (`~/.claude` credentials). That holds on a developer's machine — and the 5-hour bucket is itself a
-> property of a logged-in session. A fresh CI runner has only the headless `CLAUDE_CODE_OAUTH_TOKEN`, which
-> interactive `claude` does not consume the same way → run reviews **locally** for the 5h benefit; CI needs
-> staged credentials (open).
+> **Fresh-runner boot (RESOLVED — CI is live):** `CLAUDE_CODE_OAUTH_TOKEN` (an `sk-ant-oat01` subscription
+> token) **does** authenticate interactive `claude` on a CI runner. The real fresh-runner work was clearing
+> the first-run TUI gates a logged-in dev machine has pre-cleared: the invoker seeds onboarding+trust state
+> (`ci-claude.json`) and behaviour settings (`ci-claude-settings.json`), and **auto-answers the one
+> "Run a dynamic workflow?" consent** (`POST "1"`) — no setting suppresses that gate in interactive mode.
 >
-> Use `--dangerously-skip-permissions` so the agent's tools run without prompts.
+> Use the **`--dangerously-skip-permissions` flag** so the agent's tools run without prompts — NOT
+> `--permission-mode bypassPermissions`, which is silently downgraded on the runner. Do not set
+> `permissions.defaultMode` in the settings seed (it conflicts with the flag).
 
 - Sub-agents do **not** inherit env vars, so inputs arrive via files the runner stages
   (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the

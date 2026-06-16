@@ -14,7 +14,9 @@ how to test, and the open TODOs.
 - `.claude/workflows/backfill-memory.mjs` — learning-loop Phase 3 cold-start primer (sibling Workflow). On a repo's **first-ever** review, harvests the last N merged PRs (one agent each) and synthesizes **additive** priors (conventions, recurring-issue themes, culture notes) into the memory slice. **Additive-only** — never writes `known-patterns.md` / suppression rules (a wrong suppression silences true findings). Sentinel-gated by `.cc-memory/.backfilled`; `ci-run.sh` invokes it before the review.
 - `scripts/review-platform.ts` — platform adapter: `detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply` (GitHub via `gh`, GitLab local).
 - `scripts/analysis-tools.ts` — gather-phase deterministic runner: semgrep/lizard signals, plus it surfaces `outcomes.jsonl` (Phase-2 calibration) and the file-keyed `priorSignals` (misses/found-issues matched against the changed files — the recall lever) so neither is laundered through an LLM.
-- `scripts/agentapi-claude.sh` — **the invoker**: drives the brain through an INTERACTIVE `claude` session via [coder/agentapi](https://github.com/coder/agentapi) (5-hour bucket) instead of `claude -p` (weekly/SDK pool). Runs `agentapi server -- claude`, POSTs the prompt, polls `GET /status` until `stable` (turn complete — the official signal, no TUI scraping), GETs `/messages` (best-effort log; correctness is GitHub ground truth). Self-installs the agentapi binary. `--selftest` = reachability check (bash stand-in, no quota). **Auth: needs a logged-in claude session → works locally; a fresh CI runner needs staged credentials (open).** Used by every entry script.
+- `scripts/agentapi-claude.sh` — **the invoker**: drives the brain through an INTERACTIVE `claude` session via [coder/agentapi](https://github.com/coder/agentapi) (5-hour bucket) instead of `claude -p` (weekly/SDK pool). Runs `agentapi server -- claude`, POSTs the prompt, polls `GET /status` until `stable` (turn complete — the official signal, no TUI scraping), GETs `/messages` (best-effort log; correctness is GitHub ground truth). Self-installs the agentapi binary. On a **fresh CI runner** it clears every first-run gate so interactive claude boots headlessly (see "Interactive claude on CI" below): seeds onboarding+trust state (`ci-claude.json`) and behaviour settings (`ci-claude-settings.json`) when claude isn't already onboarded, then in the completion loop **auto-approves the one "Run a dynamic workflow?" consent** by POSTing `1` (nothing in interactive mode suppresses that gate). Auth rides on the `CLAUDE_CODE_OAUTH_TOKEN` env secret. On the not-ready failure it captures the stuck screen to `--out` (self-diagnosing). `--selftest` = reachability check (bash stand-in, no quota). `AGENTAPI_DIAG=1` re-enables a one-shot config dump. Used by every entry script.
+- `scripts/ci-claude.json` — sanitized Claude Code **state** seed (`hasCompletedOnboarding`, dark theme, hint/migration suppressors). The invoker merges it into `$HOME/.claude.json` on an un-onboarded runner and jq-injects per-project `hasTrustDialogAccepted` for `$PWD` + each `--add-dir` path. **No secrets/PII** — auth is the env token, never a committed credential.
+- `scripts/ci-claude-settings.json` — sanitized **settings** seed (`skipAutoPermissionPrompt`, `skipWorkflowUsageWarning`). Merged into `$HOME/.claude/settings.json`. Deliberately does NOT set `permissions.defaultMode` — it conflicts with the `--dangerously-skip-permissions` flag the entry scripts pass (which is what actually silences per-tool prompts; `--permission-mode bypassPermissions` does NOT engage on CI).
 - `scripts/run-local.sh` — local DRY-RUN harness (lays down `/tmp` scaffolding, drives the brain via `agentapi-claude.sh`, `post=false` always — never touches a real PR/MR).
 - `scripts/ci-run.sh` — the **GitHub** CI pipeline (prefetch → install → **interactive claude via `agentapi-claude.sh`** → push log+memory). Completion = agentapi's `stable` status; the post-run gate verifies against **GitHub ground truth** (review/comment count rose), not a parsed self-report. Consumer workflows clone cc-review at runtime (App token) and run this; replaces the #18 composite action, which can't be referenced cross-repo from a private repo on a personal account.
 - `scripts/memory-slice.sh` — shared `fetch_slice`/`push_slice` for the `claude-reviewer/memory` branch slice. Sourced by **both** `ci-run.sh` and `cc-review-cleanup.yml`'s harvest step, so the review pipeline and the Phase-1 harvest read/write the slice identically (one impl, no drift).
@@ -79,13 +81,30 @@ Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-re
 - **Memory write** can't be reproduced locally (no sandbox locally) — verify it via the `--ref` dispatch and check the `claude-reviewer/memory` branch.
 - **Syntax:** the brain uses top-level `return` (the Workflow runtime wraps the body), so `node --check` rejects it raw — wrap in `async function __wf(){ … }` first, then `node --check`.
 
-## State of the world (2026-06-05) — rebuild done, audit cleanup done, App auth FIXED + actions modernized
+## State of the world (2026-06-17) — bot is LIVE on CI via interactive claude (agentapi)
 
 The rebuild to `SPEC.md` is **complete and live on `main`** (the shipped brain == the target spec).
-The post-rebuild audit (tracking issue **#24**) was then worked end-to-end. `SPEC.md` is the exact
-source of truth and now matches the code (§15 OPEN decisions resolved → "Settled defaults").
+The post-rebuild audit (tracking issue **#24**) was worked end-to-end. `SPEC.md` is the exact
+source of truth and matches the code (§15 OPEN decisions resolved → "Settled defaults").
 
-### ✅ RESOLVED — the GitHub App auth is fixed; the bot is LIVE
+### ✅ RESOLVED — interactive claude on CI (the five gates), bot LIVE
+
+The invoker moved off `claude -p` (weekly pool) to **coder/agentapi driving interactive `claude`** (5-hour
+bucket) — first a hand-rolled tmux driver (#62, broke on GHA), then `coder/agentapi` (#63). Getting
+interactive claude to run **headlessly on a fresh GitHub runner** meant clearing five first-run gates that
+`claude -p` never had (official actions are headless, so this path was undocumented — each gate cost a CI
+round, and the last is **unreproducible on a logged-in dev machine** where every gate is pre-cleared):
+1. **onboarding/theme** → seed `hasCompletedOnboarding` (`ci-claude.json`), gate on the SEMANTIC state not file-absence (the installer leaves a stub), merge over it (#64, #65).
+2. **trust dialog** → per-project `hasTrustDialogAccepted` injected at runtime for `$PWD` + `--add-dir` paths (#64).
+3. **auth** → `CLAUDE_CODE_OAUTH_TOKEN` (an `sk-ant-oat01` subscription token in the `add-cc-review` skill's `.secrets.env`); shows as "Claude API" (token-auth label, not an API key — billing premise holds). Never the real blocker.
+4. **per-tool prompts** → the `--dangerously-skip-permissions` FLAG silences them on the runner; `--permission-mode bypassPermissions` does NOT engage (#68 wrong → #69 reverted). Do not set `permissions.defaultMode` in settings (conflicts with the flag).
+5. **"Run a dynamic workflow?" consent** → the real wall; NO settings/flag suppresses it in interactive mode (only `claude -p`/SDK skip it). The invoker **auto-answers it** (`POST "1"`) in its poll loop (#70).
+
+Verified live: consumer **shell-ast #3** got a real `<!-- cc-review:overview -->` review, run = success
+(ground-truth gate passed). The verdict stays deterministic — auto-approve only clears the launch gate;
+correctness is still GitHub ground truth, never the parsed transcript.
+
+### ✅ RESOLVED (earlier) — the GitHub App auth is fixed
 
 Root cause of the long-standing failure (`run 26985091589` → `404 Integration not found`): the
 `REVIEWER_APP_ID` secret pointed at a **deleted** App's id, so `actions/create-github-app-token`
