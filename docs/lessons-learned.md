@@ -5,16 +5,22 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 ## Runtime & invocation
 
 - **⚡ SUPERSEDED INVOCATION (2026-06-16): the bot drives the brain through an INTERACTIVE `claude`
-  session in tmux, NOT `claude -p`.** Empirically (observed 5×): `claude -p` (headless/print) bills the
-  **headless/SDK** pool — each review moved the **weekly** `/usage` ~3% while the **5-hour** session
-  window didn't budge. Anthropic split interactive vs headless/SDK billing (~June 15 2026), so an
-  interactive session draws from the abundant 5-hour rolling bucket. Fix: **`scripts/tmux-claude.sh`** runs
-  `claude` interactively in a tmux pane, pastes the prompt as ONE bracketed paste, and detects completion
-  via a **sentinel file** the agent writes as its last action (`echo done > <file>`) — NOT by scraping the
-  TUI (no machine-readable "done"). The `capture-pane` transcript is a best-effort log; correctness is
-  verified against **GitHub ground truth** (review/comment count rose), never by parsing it. `--selftest`
-  drives `bash` as a stand-in to validate the plumbing with no claude and no quota. Every entry script
-  uses it; **no `claude -p` remains in the project.** ⇒ The notes immediately below about `claude -p`,
+  session via [coder/agentapi](https://github.com/coder/agentapi), NOT `claude -p`.** Empirically (observed
+  5×): `claude -p` (headless/print) bills the **headless/SDK** pool — each review moved the **weekly**
+  `/usage` ~3% while the **5-hour** session window didn't budge. Anthropic split interactive vs headless/SDK
+  billing (~June 15 2026), so an interactive session draws from the abundant 5-hour bucket. **First cut was
+  a hand-rolled tmux driver** (send-keys + bracketed paste + a sentinel file) — it worked locally but is
+  reinventing the wheel; **`coder/agentapi` is the purpose-built tool** and replaced it. Fix:
+  **`scripts/agentapi-claude.sh`** runs `agentapi server -- claude`, POSTs the prompt, polls `GET /status`
+  until `stable` (turn complete — the official signal, no TUI scraping), GETs `/messages` as a best-effort
+  log. Correctness is verified against **GitHub ground truth** (review/comment count rose), never by parsing
+  the log. `--selftest` is a reachability check (a `bash` stand-in can't reach `stable` — agentapi needs a
+  known agent type). **AUTH GOTCHA (cost a live GHA run):** agentapi runs `claude` interactively, which needs
+  a **logged-in** `~/.claude` session — works on a dev machine, but a fresh CI runner has only the headless
+  `CLAUDE_CODE_OAUTH_TOKEN` and interactive `claude` doesn't consume it → claude never reaches `stable`, the
+  driver times out, nothing posts. The 5-hour bucket is itself a logged-in-session property, so this is a
+  LOCAL technique; CI needs staged credentials. Every entry script uses agentapi-claude.sh; **no `claude -p`
+  remains in the project.** ⇒ The notes immediately below about `claude -p`,
   `--allowedTools`, `--output-format stream-json`, and the session.jsonl gate are **HISTORICAL** — the
   `scriptPath`/Workflow-tool facts still hold, but the invocation + the stream-json gate are superseded.
 

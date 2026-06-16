@@ -91,12 +91,11 @@ if [ "$BACKFILL_NEEDED" = "1" ]; then
   # string; validating here keeps a malformed value out of the agent prompt (and out of the log line).
   if printf '%s' "$BF_PRS" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
     echo "backfill: priming memory for ${REPO} from merged PRs ${BF_PRS}"
-    command -v tmux >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq tmux >/dev/null 2>&1 || true; }
     BF_PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/backfill-memory.mjs' and args { bot_dir: '${CC_REVIEW_BOT_DIR}', repo: '${REPO}', prs: ${BF_PRS} }. Run it to completion and report its return value verbatim as JSON."
     printf '%s' "$BF_PROMPT" > /tmp/run/bf-prompt.txt
-    # Interactive (5h bucket), not `claude -p`. Best-effort: a non-zero exit (no completion sentinel) is
-    # surfaced as a warning, not a failure — a cold review is the safe fallback (cf. #51).
-    "$CC_REVIEW_BOT_DIR/scripts/tmux-claude.sh" --prompt-file /tmp/run/bf-prompt.txt --out /tmp/run/backfill-transcript.txt \
+    # Interactive via agentapi (5h bucket), not `claude -p`. Best-effort: a non-zero exit (never went
+    # stable) is surfaced as a warning, not a failure — a cold review is the safe fallback (cf. #51).
+    "$CC_REVIEW_BOT_DIR/scripts/agentapi-claude.sh" --prompt-file /tmp/run/bf-prompt.txt --out /tmp/run/backfill-transcript.txt \
       --claude-arg --model --claude-arg claude-sonnet-4-6 \
       --claude-arg --dangerously-skip-permissions \
       --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
@@ -138,28 +137,28 @@ BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
 # only govern WHICH tools run and approval, NOT which paths they may touch. Without it the agent can't
 # read the bot clone ($CC_REVIEW_BOT_DIR) or the /tmp-staged inputs (cc-input.json, pr-diff.txt) — it
 # then non-deterministically refuses ("won't run a script I can't read"), giving flaky red checks (#49).
-# Drive the brain through an INTERACTIVE claude session in tmux (5-hour bucket) — NOT `claude -p`,
-# which bills the scarce headless/SDK pool (~3% of weekly /usage per run). Completion is signalled by a
-# sentinel file the agent writes as its last action (tmux-claude.sh polls it); a non-zero exit = it
-# never signalled (timed out / died). Correctness is verified below against GitHub ground truth, so the
-# messy TUI transcript is only a best-effort log — we never parse it for the verdict.
-command -v tmux >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq tmux >/dev/null 2>&1 || true; }
+# Drive the brain through an INTERACTIVE claude session via coder/agentapi (5-hour bucket) — NOT
+# `claude -p`, which bills the scarce headless/SDK pool (~3% of weekly /usage per run). agentapi runs
+# claude interactively + exposes POST /message + GET /status (running|stable); completion = the official
+# "stable" status (agentapi-claude.sh handles it). A non-zero exit = it never went stable (timed out /
+# auth failed / died). Correctness is verified below against GitHub ground truth, so the captured
+# conversation is only a best-effort log — we never parse it for the verdict.
 printf '%s' "$PROMPT" > /tmp/run/prompt.txt
-"$CC_REVIEW_BOT_DIR/scripts/tmux-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
+"$CC_REVIEW_BOT_DIR/scripts/agentapi-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
   --claude-arg --dangerously-skip-permissions \
   --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
   --claude-arg --add-dir --claude-arg /tmp
-TMUX_RC=$?
+RUN_RC=$?
 cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true
 
 # ── Everything below ALWAYS runs (even if the review died mid-way) ───────────
 RUN_FAILED=0
 REASON=""
 
-# 4) Completion: tmux-claude.sh exits 0 ONLY when the agent wrote the completion sentinel (its last act
-# after the Workflow returns). A non-zero exit = timed out or died mid-review — often a usage limit.
-if [ "$TMUX_RC" -ne 0 ]; then
+# 4) Completion: agentapi-claude.sh exits 0 ONLY when the agent's turn completed (status returned to
+# "stable"). A non-zero exit = timed out / claude never went ready (auth?) / died — often a usage limit.
+if [ "$RUN_RC" -ne 0 ]; then
   REASON="the review did not signal completion (timed out or died mid-review — often a usage/quota limit)"
 fi
 

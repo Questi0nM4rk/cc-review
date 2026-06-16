@@ -141,7 +141,7 @@ PROMPT="${PROMPT}. Run it to completion and report its return value verbatim as 
 
 echo "running workflow via an interactive claude session in tmux (post=false)…"
 printf '%s' "$PROMPT" > /tmp/run/prompt.txt
-"$(dirname "${BASH_SOURCE[0]}")/tmux-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
+"$(dirname "${BASH_SOURCE[0]}")/agentapi-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
   --claude-arg --dangerously-skip-permissions \
   --claude-arg --add-dir --claude-arg /tmp

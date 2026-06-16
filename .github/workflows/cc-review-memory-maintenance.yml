@@ -72,7 +72,6 @@ jobs:
           set -uo pipefail
           curl -fsSL https://claude.ai/install.sh | bash
           export PATH="$HOME/.local/bin:$PATH"
-          command -v tmux >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq tmux >/dev/null 2>&1 || true; }
           # The agent cannot mkdir under the sandbox — pre-create the additive layer's dir.
           mkdir -p mem/_global/learnings
           cat > /tmp/consolidate-prompt.txt <<'PROMPT'
@@ -81,8 +80,8 @@ jobs:
           - mem/_global/learnings/watch-patterns.md   recurring issue patterns to WATCH FOR / raise scrutiny on across repos.
           HARD RULES: (1) ADDITIVE ONLY — every entry RAISES scrutiny or adds context; NEVER write a suppression, a 'do not flag', or a known-pattern rule (a wrong GLOBAL suppression silences true findings in EVERY repo, with no backstop). (2) GENERALISE — strip repo-specific names/paths/ids; keep only what transfers. (3) DEDUP + CONSOLIDATE — first cat any existing mem/_global/learnings/*.md and MERGE into it, do not pile on; cap each file at ~25 bullets. (4) If nothing is genuinely cross-cutting, leave the files unchanged and say so. Confirm in one line what you wrote.
           PROMPT
-          # Interactive (5h bucket), not `claude -p`. Best-effort; a non-zero exit just means no consolidation this run.
-          bot/scripts/tmux-claude.sh --prompt-file /tmp/consolidate-prompt.txt --out /tmp/consolidate-transcript.txt \
+          # Interactive via agentapi (5h bucket), not `claude -p`. Best-effort; a non-zero exit just means no consolidation this run.
+          bot/scripts/agentapi-claude.sh --prompt-file /tmp/consolidate-prompt.txt --out /tmp/consolidate-transcript.txt \
             --claude-arg --model --claude-arg claude-sonnet-4-6 \
             --claude-arg --dangerously-skip-permissions \
             --claude-arg --add-dir --claude-arg "$PWD/mem" \

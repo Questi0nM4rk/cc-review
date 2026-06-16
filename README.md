@@ -26,7 +26,7 @@ On a **first review** it posts a **pre-review walkthrough** (business + technica
 ```
 PR event / @cc-review ping
         │
-  GitHub Actions: clone bot, generate App token, run the workflow via an interactive claude session (tmux, not claude -p)
+  GitHub Actions: clone bot, generate App token, run the workflow via an interactive claude session (coder/agentapi, not claude -p)
         │
   strict-review.mjs  (the whole brain) — first review vs re-run by the overview-comment marker
    FIRST REVIEW

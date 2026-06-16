@@ -83,7 +83,7 @@ PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: $
 # --dangerously-skip-permissions, NOT --permission-mode bypassPermissions: the latter is silently
 # downgraded (to default/auto), which would block the agent's tool calls in a headless run.
 printf '%s' "$PROMPT" > /tmp/run/prompt.txt
-"$(dirname "${BASH_SOURCE[0]}")/tmux-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
+"$(dirname "${BASH_SOURCE[0]}")/agentapi-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
   --claude-arg --dangerously-skip-permissions \
   --claude-arg --add-dir --claude-arg /tmp

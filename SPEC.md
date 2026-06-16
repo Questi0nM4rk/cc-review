@@ -18,7 +18,7 @@ is **one self-contained workflow** (`.claude/workflows/strict-review.mjs`) — n
 no submodule. Two modes:
 
 - **GitHub bot mode** — in a consumer repo's GitHub Actions, from a GitHub App identity. The brain runs
-  through an **interactive `claude` session in tmux** (not headless `claude -p`) — see §2 for why.
+  through an **interactive `claude` session via coder/agentapi** (not headless `claude -p`) — see §2 for why.
 - **GitLab local mode** — run interactively on your machine against a MR. **Posts to the MR but never pushes a branch.**
 
 Review philosophy: **one tier — every finding is a required change; approve only when there are zero findings and zero unresolved threads.** No severity labels, no "nits".
@@ -28,14 +28,14 @@ Review philosophy: **one tier — every finding is a required change; approve on
 ## 2. Runtime
 
 Invoked through the Claude Code **Workflow tool by `scriptPath`** (empirically verified — not a `/slash`
-command, not the Agent SDK), driven through an **INTERACTIVE `claude` session in tmux** (via
-`scripts/tmux-claude.sh`), **not `claude -p`**:
+command, not the Agent SDK), driven through an **INTERACTIVE `claude` session via
+[coder/agentapi](https://github.com/coder/agentapi)** (`scripts/agentapi-claude.sh`), **not `claude -p`**:
 
 ```bash
-# tmux-claude.sh starts `claude` interactively in a tmux pane, pastes the prompt as ONE bracketed
-# paste, and polls a completion SENTINEL the agent writes as its last action (no TUI scraping).
+# agentapi-claude.sh runs `agentapi server -- claude`, POSTs the prompt, polls GET /status until
+# "stable" (turn complete), then GETs /messages. It installs agentapi (single binary) if missing.
 printf '%s' "$PROMPT" > "$RUN_DIR/prompt.txt"
-scripts/tmux-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/transcript.txt" \
+scripts/agentapi-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/transcript.txt" \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
   --claude-arg --dangerously-skip-permissions \
   --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" --claude-arg --add-dir --claude-arg /tmp
@@ -43,23 +43,28 @@ scripts/tmux-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/trans
 
 > **Why interactive, not `claude -p`:** `claude -p` (headless/print) bills the headless/SDK pool —
 > empirically it moves the **weekly** `/usage` ~3% per run while the **5-hour** session window doesn't
-> budge. An interactive session draws from the abundant 5-hour rolling bucket, so the bot drives the
-> brain through tmux to stop burning the scarce pool.
+> budge. An interactive session draws from the abundant 5-hour bucket. **agentapi** wraps interactive
+> `claude` as a clean HTTP API — `POST /message`, `GET /status` (`running`|`stable`), `GET /messages` —
+> so we get the cheap bucket without hand-scraping a TUI.
 >
-> **Completion is a sentinel file, not screen-scraping:** the prompt tells the agent to `echo done > <file>`
-> as its very last action; the driver polls for it (deterministic, TUI-version-independent). The
-> `capture-pane` transcript is a best-effort log only — correctness is verified against **GitHub ground
-> truth**, never by parsing it. Validate the plumbing with `scripts/tmux-claude.sh --selftest` (drives
-> `bash` as a stand-in — no claude, no quota).
+> **Completion = the official `stable` status** (poll `GET /status`), not transcript parsing — the captured
+> conversation is a best-effort log; correctness is verified against **GitHub ground truth**, never by
+> parsing it. Validate the plumbing with `scripts/agentapi-claude.sh --selftest` (a `bash` stand-in — no
+> claude, no quota; reachability only, since a generic command can't reach `stable`).
 >
-> Use `--dangerously-skip-permissions` so the agent's tools run without prompts; no `--allowedTools`
-> allowlist is passed in interactive mode (skip-perms covers it).
+> **Auth caveat (LOCAL vs CI):** agentapi runs `claude` interactively, so it needs a **logged-in** session
+> (`~/.claude` credentials). That holds on a developer's machine — and the 5-hour bucket is itself a
+> property of a logged-in session. A fresh CI runner has only the headless `CLAUDE_CODE_OAUTH_TOKEN`, which
+> interactive `claude` does not consume the same way → run reviews **locally** for the 5h benefit; CI needs
+> staged credentials (open).
+>
+> Use `--dangerously-skip-permissions` so the agent's tools run without prompts.
 
 - Sub-agents do **not** inherit env vars, so inputs arrive via files the runner stages
   (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the
   workspace** (`.cc-memory/`, `.cc-run/`; the read-only `.cc-global/` is staged there too) with `cat`
   heredocs into **pre-created** dirs — a convention proven in the old headless/allowlist era and
-  **retained across the tmux switch** (harmless and robust; interactive + `--dangerously-skip-permissions`
+  **retained across the interactive/agentapi switch** (harmless and robust; interactive + `--dangerously-skip-permissions`
   no longer passes a Bash allowlist). See `docs/lessons-learned.md`.
 
 ---
