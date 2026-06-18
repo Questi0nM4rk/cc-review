@@ -370,21 +370,43 @@ const gl = {
     const fellBack: string[] = [];
 
     for (const c of payload.comments ?? []) {
-      // Positioned discussion. If the instance rejects the position, fall back
-      // to appending the finding to the summary note (so nothing is lost).
-      const args = [
+      // Positioned (inline) discussion. GitLab needs `position` as a NESTED object: the bracket
+      // form (`-f "position[new_line]=N"`) is silently DROPPED by the API, which then creates a
+      // FLOATING note with HTTP 201 — no error to detect. So we send a JSON body via `--input -`
+      // (stdin), and then VERIFY the created note is a real DiffNote. If the instance still rejects
+      // the position (e.g. the line is not part of the diff), GitLab makes a non-positioned note:
+      // delete that stray note and fall back to the summary list so the finding is neither lost
+      // nor left as a confusing floating comment.
+      const discBody = JSON.stringify({
+        body: c.body,
+        position: {
+          position_type: "text",
+          base_sha: refs.base_sha ?? "",
+          head_sha: refs.head_sha ?? "",
+          start_sha: refs.start_sha ?? "",
+          new_path: c.path,
+          old_path: c.path,
+          new_line: c.line,
+        },
+      });
+      const r = run("glab", [
         "api", `projects/${proj}/merge_requests/${iid}/discussions`, "--method", "POST",
-        "-f", `body=${c.body}`,
-        "-f", "position[position_type]=text",
-        "-f", `position[base_sha]=${refs.base_sha ?? ""}`,
-        "-f", `position[head_sha]=${refs.head_sha ?? ""}`,
-        "-f", `position[start_sha]=${refs.start_sha ?? ""}`,
-        "-f", `position[new_path]=${c.path}`,
-        "-f", `position[old_path]=${c.path}`,
-        "-f", `position[new_line]=${c.line}`,
-      ];
-      const r = run("glab", args);
-      if (r.code !== 0) fellBack.push(`- **\`${c.path}:${c.line}\`** — ${c.body}`);
+        "--header", "Content-Type: application/json", "--input", "-",
+      ], discBody);
+
+      let positioned = false;
+      if (r.code === 0) {
+        try {
+          const d = JSON.parse(r.stdout);
+          const note = d.notes?.[0];
+          positioned = note?.type === "DiffNote";
+          // A non-DiffNote means the position didn't take — remove the stray floating note before falling back.
+          if (!positioned && d.id && note?.id) {
+            run("glab", ["api", `projects/${proj}/merge_requests/${iid}/discussions/${d.id}/notes/${note.id}`, "--method", "DELETE"]);
+          }
+        } catch { /* unparseable response -> treat as not positioned, fall back below */ }
+      }
+      if (!positioned) fellBack.push(`- **\`${c.path}:${c.line}\`** — ${c.body}`);
     }
 
     let summary = payload.body ?? "";
