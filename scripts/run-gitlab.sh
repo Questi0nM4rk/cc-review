@@ -9,7 +9,9 @@ set -euo pipefail
 #    GitLab  -> LOCAL only (this script). There is no GitLab App / CI install.
 #               You run this from inside a clone of the GitLab repo and it posts
 #               to the MR using YOUR `glab` credentials. It NEVER pushes branches
-#               (no log/memory branch) — review memory stays in a local .cc-memory/.
+#               (no log/memory branch). Review memory stays OUT of the product repo,
+#               under ~/.claude/cc-review-memory/<repo-slug>/ (per-machine, never the
+#               CI memory branch — local and CI memory never cross).
 #
 #  The review engine (.claude/workflows/strict-review.mjs) and the I/O adapter
 #  (scripts/review-platform.ts) are platform-agnostic: `detect()` routes every
@@ -58,26 +60,29 @@ HOST="$(printf '%s' "$DET" | jq -r .host)"
 [[ "$PLATFORM" == "gitlab" ]] || die "detected '$PLATFORM' (host: $HOST), not gitlab. GitHub uses the CI workflows — this script is GitLab-only."
 glab auth status >/dev/null 2>&1 || die "glab is not authenticated for $HOST — run: glab auth login --hostname $HOST"
 
+# ---- Local review memory: OUT of the product repo (#73) ----------------------
+# A local ad-hoc run must not pollute the product working tree, and must stay separate from the
+# GitHub-CI memory branch (local and CI memory never cross). Memory is keyed by the repo path under
+# ~/.claude/cc-review-memory/<slug>/, passed to the brain via args.mem_dir and allowed for writes via
+# --add-dir (review agents are filesystem-sandboxed). Never fetched/pushed — purely local, per-machine.
+SLUG="$(printf '%s' "$REPO" | tr '/' '-' | tr -cd '[:alnum:]._-')"
+MEMDIR="${HOME}/.claude/cc-review-memory/${SLUG:-repo}"
+
 # ---- Stage the same inputs the GHA writes (minus the App/CI bits) ------------
 # Truncate any stale prefetched diff so the adapter fetches THIS MR fresh via glab.
-mkdir -p /tmp/run .cc-memory/learnings ".cc-memory/pr-${MR}"
+mkdir -p /tmp/run "${MEMDIR}/learnings" "${MEMDIR}/pr-${MR}"
 : > /tmp/pr-diff.txt
 printf '%s' "$MESSAGE" > /tmp/cc-user-msg.txt
-[[ -f .cc-memory/MEMORY.md ]] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > .cc-memory/MEMORY.md
+[[ -f "${MEMDIR}/MEMORY.md" ]] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > "${MEMDIR}/MEMORY.md"
 # ping_override:true — a manual local run is an explicit "review now", like an @cc-review ping.
 printf '{ "pr_number": %s, "repo": "%s", "platform": "gitlab", "post": %s, "ping_override": true }\n' \
   "$MR" "$REPO" "$POST" > /tmp/cc-input.json
 
-# Local review memory lives in .cc-memory/ — never commit it.
-if ! grep -qsE '^\.cc-memory/?$' .gitignore; then
-  printf 'run-gitlab: note — add ".cc-memory/" to .gitignore (local review memory; do not commit it)\n' >&2
-fi
-
-echo "cc-review (GitLab local) — repo=$REPO  MR=!$MR  host=$HOST  post=$POST"
+echo "cc-review (GitLab local) — repo=$REPO  MR=!$MR  host=$HOST  post=$POST  mem=$MEMDIR"
 
 # bot_dir is passed via args so the brain builds absolute adapter/tool paths (it can't read
 # $CC_REVIEW_BOT_DIR — sub-agents don't inherit env). Locally BOT is the bot repo root.
-PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: ${MR}, repo: '${REPO}', bot_dir: '${BOT}' }. Run it to completion and report its return value verbatim as JSON. It reads PR/MR number, repo, post-flag, and the @cc-review message from /tmp/cc-input.json + /tmp/cc-user-msg.txt, talks to GitLab via glab through ${ADAPTER}, and reads project config from .cc-review.yaml."
+PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: ${MR}, repo: '${REPO}', bot_dir: '${BOT}', mem_dir: '${MEMDIR}' }. Run it to completion and report its return value verbatim as JSON. It reads PR/MR number, repo, post-flag, and the @cc-review message from /tmp/cc-input.json + /tmp/cc-user-msg.txt, talks to GitLab via glab through ${ADAPTER}, reads/writes local review memory under ${MEMDIR}, and reads project config from .cc-review.yaml."
 
 # GitLab path: glab only (no gh). Posting is via the adapter's gl.* verbs.
 # --dangerously-skip-permissions, NOT --permission-mode bypassPermissions: the latter is silently
@@ -86,7 +91,8 @@ printf '%s' "$PROMPT" > /tmp/run/prompt.txt
 "$(dirname "${BASH_SOURCE[0]}")/agentapi-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
   --claude-arg --dangerously-skip-permissions \
-  --claude-arg --add-dir --claude-arg /tmp
+  --claude-arg --add-dir --claude-arg /tmp \
+  --claude-arg --add-dir --claude-arg "${MEMDIR}"
 
 echo "----- workflow transcript (posting happens via glab inside the run; verify on the MR) -----"
 cat /tmp/run/transcript.txt 2>/dev/null || echo "(no transcript captured)"

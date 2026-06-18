@@ -23,6 +23,15 @@ const MAX_FINDINGS = 60;
 // reflects what ran (no dead detection of tools nothing consumes).
 const CANDIDATES = ["semgrep", "lizard"];
 
+// Memory dir for the learning-loop reads below. Default `.cc-memory` (the GitHub CI workspace slice);
+// the brain passes `--mem-dir <abs path>` for a GitLab-local run, whose memory lives out of the product
+// repo (#73). Default keeps GitHub behavior identical.
+const MEM = (() => {
+  const i = process.argv.indexOf("--mem-dir");
+  const v = i >= 0 ? process.argv[i + 1] : undefined;
+  return v && v.trim() ? v.trim() : ".cc-memory";
+})();
+
 function have(bin: string): boolean {
   return spawnSync("which", [bin], { encoding: "utf8" }).status === 0;
 }
@@ -70,7 +79,7 @@ function runLizard(files: string[]): Finding[] {
 // wrote, never an LLM paraphrase (the spine principle). Absent before the first harvest -> []. Only
 // {domain,verdict} is projected (all calibration consumes); the file also carries id/pr/at — YAGNI here.
 function outcomes(): { domain: string; verdict: string }[] {
-  const path = ".cc-memory/learnings/outcomes.jsonl";
+  const path = `${MEM}/learnings/outcomes.jsonl`;
   if (!existsSync(path)) return [];
   const rows: { domain: string; verdict: string }[] = [];
   for (const line of readFileSync(path, "utf8").split("\n")) {
@@ -94,8 +103,9 @@ function priorSignals(changed: string[]): { misses: { file: string; note: string
   const misses: { file: string; note: string }[] = [];
   const priorIssues: { file: string; note: string }[] = [];
   // misses.jsonl rows: { file, ref_pr, clean_pr } — the recall signal harvested on a later fix PR.
-  if (existsSync(".cc-memory/learnings/misses.jsonl")) {
-    for (const line of readFileSync(".cc-memory/learnings/misses.jsonl", "utf8").split("\n")) {
+  const missesPath = `${MEM}/learnings/misses.jsonl`;
+  if (existsSync(missesPath)) {
+    for (const line of readFileSync(missesPath, "utf8").split("\n")) {
       const s = line.trim(); if (!s) continue;
       try {
         const m = JSON.parse(s);
@@ -108,8 +118,9 @@ function priorSignals(changed: string[]): { misses: { file: string; note: string
   }
   // found-issues.md bullets, e.g. "- path/to/file.ts:42 — description". Best-effort path-substring match
   // (the curating memory agent may reword a bullet, so this is additive, never relied upon).
-  if (existsSync(".cc-memory/learnings/found-issues.md")) {
-    for (const line of readFileSync(".cc-memory/learnings/found-issues.md", "utf8").split("\n")) {
+  const foundIssuesPath = `${MEM}/learnings/found-issues.md`;
+  if (existsSync(foundIssuesPath)) {
+    for (const line of readFileSync(foundIssuesPath, "utf8").split("\n")) {
       for (const f of changed) {
         if (f && line.includes(f) && !seenIssue.has(f)) {
           seenIssue.add(f);

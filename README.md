@@ -142,7 +142,7 @@ scripts/run-gitlab.sh --mr 42 --dry-run          # review only, post nothing
 scripts/run-gitlab.sh --mr 42 --message "focus on the auth change"
 ```
 
-The adapter auto-detects GitLab and uses `glab`; the review + walkthrough post to the MR, but **no branches are pushed** — review memory stays in a local `.cc-memory/` (add it to `.gitignore`). The runner **refuses to run on a GitHub repo** — use the CI workflows there. For a quick no-post smoke test on any diff (either platform), `scripts/run-local.sh` is the dry-run harness.
+The adapter auto-detects GitLab and uses `glab`; the review + walkthrough post to the MR, but **no branches are pushed**. Review memory stays **out of the product repo**, under `~/.claude/cc-review-memory/<repo-slug>/` (per-machine, never committed, and never the GitHub-CI memory branch — local and CI memory never cross). The runner **refuses to run on a GitHub repo** — use the CI workflows there. For a quick no-post smoke test on any diff (either platform), `scripts/run-local.sh` is the dry-run harness.
 
 ## Troubleshooting
 
