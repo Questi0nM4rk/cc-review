@@ -257,6 +257,17 @@ The workflow only writes the files; the GHA pushes (3-attempt retry; `git fetch 
 then `git checkout -B <branch> FETCH_HEAD` — no `origin/<branch>` tracking ref exists under the
 shallow single-branch clone). **GitLab local mode pushes none of these.**
 
+**Per-environment config (one injected object, not scattered constants).** The one value that genuinely
+differs between GitHub-CI and GitLab-local *inside the brain* is the memory dir, so it is externalized
+rather than hardcoded: the brain reads `MEM` from `args.mem_dir`, defaulting to `.cc-memory` (the
+GitHub-CI workspace slice — behavior unchanged). `analysis-tools.ts` takes a matching `--mem-dir` flag
+(same default). **GitLab-local memory lives OUT of the product repo**, at
+`~/.claude/cc-review-memory/<repo-slug>/`, injected via `args.mem_dir` and made writable by the sandbox
+via `--add-dir` (`run-gitlab.sh`). It is purely local/per-machine — **local and CI memory never cross**
+(no `fetch_slice`/`push_slice`/`_global/` of the CI branch from a local run). The other env differences
+(slice fetch/push, `_global/` staging, identity) are already separated at the *runner* layer
+(`ci-run.sh` does them; `run-gitlab.sh` does not), not in the brain.
+
 **Bounded size (self-curating).** The memory branch is kept small two ways: (1) gather observations
 are **not** persisted (only the tiny per-PR `review-state.json` marker is), so the per-PR footprint
 is ~bytes, not the multi-KB research dumps an earlier design wrote; and (2) the memory agent
