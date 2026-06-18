@@ -40,6 +40,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 
 - **Workflow sub-agents do NOT inherit the launching process's environment variables.** A sub-agent's `echo $PR_NUMBER` returns nothing. Symptom: the Fetch agent hallucinated the PR number (used `10` instead of the dispatched `4`) and silently dropped `CC_POST`, so it never posted.
 - **`args` do NOT reach the workflow's `args` global** through a `claude -p` prompt-driven Workflow call — `received_args: null` even when the args object is written into the prompt. Do not depend on `args` for CI inputs.
+  - **⚡ 2026-06-18 UPDATE — interactive/agentapi DOES pass `args`.** The `received_args: null` was a `claude -p` artifact. Under the current interactive/agentapi invocation the brain DOES receive `args` and relies on it: `args.bot_dir` (absolute bot clone path) and `args.mem_dir` (GitLab-local memory dir, #73) are both read via `normArgs()` in the brain, which also tolerates `args` arriving as a JSON-encoded string. **So:** static, per-run-invariant config rides `args`; per-run runtime values (pr_number, repo, post, ping_override) still arrive via `/tmp/cc-input.json`. Don't be misled by the line above when working the interactive path.
 - **Files DO cross the boundary.** Sub-agent bash can read/write `/tmp` (the diff arrived fine via `/tmp/pr-diff.txt`). **So pass all inputs as files.** The GHA writes `/tmp/cc-input.json` (`{pr_number, repo, platform, post}`) in its own bash (the GHA step *does* have the env); the Fetch agent reads that file.
 
 ## Sub-agent sandbox
@@ -55,6 +56,7 @@ Hard-won during the rewrite. Each of these cost a debugging cycle or a CI run to
 ## Platform (GitHub vs GitLab)
 
 - **GitHub thread replies need the REST `comment_db_id` (`in_reply_to`), NOT the reviewThread node id** (which `resolveReviewThread` uses). Carry both ids per thread; the reply verb takes `--comment-id` for GitHub, `--thread` for GitLab. GitLab uses the discussion id for both, so the bug is invisible until you run GitHub.
+- **GitLab silently drops the bracketed `position[...]` form fields (#74).** A POST to `.../discussions` with `-f "position[new_line]=N" -f "position[position_type]=text" …` returns **HTTP 201** but creates a floating `DiscussionNote`, not an inline `DiffNote` — so findings land as floating MR comments and `inline_fallbacks` reports **0** because the POST "succeeded". There is no error to detect, which is why it went unnoticed through every dry-run. Fix: send `position` as a **nested object in a JSON body** (`glab api … -H "Content-Type: application/json" --input -`), then **VERIFY** the created note's `type === "DiffNote"`; on a non-positioned result, DELETE the stray note and fall back to the summary list (so a finding is neither lost nor left floating). The spine principle again — the 201 is a self-report; the `DiffNote` check is ground truth. Lives in `gl.postReview` (`scripts/review-platform.ts`).
 - **`gh pr diff` 404s on diffs too large for the API.** Pre-fetch to `/tmp/pr-diff.txt` with a `git diff base...head` fallback; the adapter prefers the pre-fetched file.
 
 ## Deployment & testing

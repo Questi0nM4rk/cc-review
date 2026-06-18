@@ -22,7 +22,7 @@ how to test, and the open TODOs.
 - `scripts/memory-slice.sh` — shared `fetch_slice`/`push_slice` for the `claude-reviewer/memory` branch slice. Sourced by **both** `ci-run.sh` and `cc-review-cleanup.yml`'s harvest step, so the review pipeline and the Phase-1 harvest read/write the slice identically (one impl, no drift).
 - `scripts/harvest-outcomes.mjs` — learning-loop Phase 1 + 4. On PR **merge** (a `cc-review-cleanup.yml` job, `merged==true`-gated): **(1)** classifies each posted finding's fate **deterministically** against GitHub ground truth (thread state + `isOutdated`) → appends `learnings/outcomes.jsonl` (`fixed/dismissed/ignored/open-but-acted/gone`; idempotent by `id+pr`; 180-day window); **(2)** Phase 4 miss-capture — a fix/revert PR touching a file an earlier PR was reviewed **clean** on → `learnings/misses.jsonl` (the recall signal). No LLM reads comment text. Plain Node ESM (a runner step, not a sandboxed agent), unit-tested via `harvest-outcomes.test.mjs`.
 - `scripts/memory-maintenance.mjs` — periodic DETERMINISTIC memory-branch maintenance (a runner step, **zero Claude quota**). Prunes old `pr-<N>/` dirs beyond a retention cap (the unbounded-growth leak — they're never deleted on PR close), trims the jsonl logs to their window, writes a `MAINTENANCE.md` health report (per-slice verdict tallies + ⚠ for domains trending to silence / unread miss candidates). **Dry-run by default; `--apply` writes.** Skips the `_global/` layer (not a slice). Unit + e2e tested via `memory-maintenance.test.mjs`.
-- `scripts/run-gitlab.sh` — the **GitLab** entry point: run a real MR review **locally** and post via `glab` (your creds; no App, no CI, no branch pushes). Refuses to run on a GitHub repo (that's the CI path). This is the platform split: GitHub = CI/App, GitLab = local.
+- `scripts/run-gitlab.sh` — the **GitLab** entry point: run a real MR review **locally** and post via `glab` (your creds; no App, no CI, no branch pushes). Refuses to run on a GitHub repo (that's the CI path). This is the platform split: GitHub = CI/App, GitLab = local. Local review memory lives **out of the product repo**, at `~/.claude/cc-review-memory/<repo-slug>/` (injected via `args.mem_dir`, writable via `--add-dir`; never the CI memory branch — local and CI never cross).
 - `scripts/verify-gate.test.mjs` — contract spec for the fetch identity gate (`node scripts/verify-gate.test.mjs`).
 - `lang-refs/` — per-language checklists reviewers pull with `cat`.
 - `.github/workflows/cc-review*.yml` — the GHA templates installed into consumer repos (review, interactive ping, cleanup). **Exception: `cc-review-memory-maintenance.yml` runs IN cc-review** (the memory branch lives here, so one job maintains every slice) — scheduled deterministic cleanup (no quota) + opt-in cross-repo `_global/` consolidation (one agent, `consolidate=true`, spends quota).
@@ -81,7 +81,7 @@ Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-re
 - **Memory write** can't be reproduced locally (no sandbox locally) — verify it via the `--ref` dispatch and check the `claude-reviewer/memory` branch.
 - **Syntax:** the brain uses top-level `return` (the Workflow runtime wraps the body), so `node --check` rejects it raw — wrap in `async function __wf(){ … }` first, then `node --check`.
 
-## State of the world (2026-06-17) — bot is LIVE on CI via interactive claude (agentapi)
+## State of the world (2026-06-18) — bot is LIVE on CI via interactive claude (agentapi)
 
 The rebuild to `SPEC.md` is **complete and live on `main`** (the shipped brain == the target spec).
 The post-rebuild audit (tracking issue **#24**) was worked end-to-end. `SPEC.md` is the exact
@@ -130,24 +130,40 @@ the marker) · #20 self-curating memory (consolidate, don't append) · #21 (code
 cleanup workflow + stale refs fixed) · #22 README quickstart+sample · #23 SPEC §15 resolved.
 Also fixed: two invisible control-byte corruptions in the brain (sanitizeContext / globToRe).
 
+### GitLab path landed + tracker hygiene (2026-06-18)
+
+The GitLab-local path was exercised end-to-end this session; two issues' worth of work merged to `main`,
+two stale issues closed:
+- **#74 — GitLab inline positioning (merged `90327e2`).** GitLab silently drops the bracketed
+  `position[...]` form (POST 201 → a floating `DiscussionNote`, not an inline `DiffNote`) — a silent
+  failure (`inline_fallbacks=0`, no error to detect). `gl.postReview` now sends `position` as a nested
+  JSON body via `--input -`, verifies the created note is a `DiffNote`, and on a non-positioned result
+  deletes the stray note and falls back to the summary list. GitLab-only path (never runs in CI) → no
+  GitHub-consumer risk. **Live non-dry-run verify still pending** (the core AC).
+- **#73 — per-env config + local-memory relocation (merged `9b33048`).** The brain reads `MEM` from
+  `args.mem_dir` (default `.cc-memory` → **GitHub CI unchanged**); `analysis-tools.ts` gained a matching
+  `--mem-dir`; `run-gitlab.sh` puts local memory at `~/.claude/cc-review-memory/<repo-slug>/` (out of the
+  product repo, via `--add-dir`). Only `mem_dir` actually leaked into the brain — the other env knobs were
+  already runner-layer-separated (`ci-run.sh` does slice fetch/push + `_global/`, `run-gitlab.sh` doesn't;
+  `post` rides `cc-input.json`), documented in SPEC §7. Also fixed two latent path bugs (a hardcoded
+  `.cc-memory` in the fetch prompt + a `./${MEM}` prefix that breaks an absolute path). Verified: brain
+  syntax gate + 125 helper tests green.
+- **Closed as already-done:** **#18** (composite reverted → runtime-clone; dedup achieved via `ci-run.sh`,
+  which both entry workflows delegate to) and **#54** (learning-loop v1 shipped across Phases 0–4; only
+  drift-monitoring deferred — see `docs/learning-loop-plan.md`).
+
 ### Open / outstanding
 
-- **#18 — composite action: REVERTED → runtime-cloned `scripts/ci-run.sh`.** The composite
-  (`uses: …/cc-review-run@main`) could NOT be referenced cross-repo from a **private** repo on a
-  **personal** account — `uses:` resolves at "Set up job" with the consumer's own `GITHUB_TOKEN`,
-  which can't read the private bot repo (the `access_level` sharing setting is org-only; setting it
-  to `user` did not help). It only ever worked for cc-review reviewing **itself** (same repo). Now
-  both entry workflows clone cc-review at runtime via the **App token** (which CAN read the private
-  repo) and run `scripts/ci-run.sh` — leaner (one clone, not uses-fetch + clone), still DRY +
-  runtime-updated. Verified live on cc-review (#40) and consumer `feats`.
 - **#21 — clean install (live):** code-side done; still needs a fresh install on a throwaway repo →
   real review, end-to-end, following only `scripts/` + README.
-- **#11 — GitLab mode (live):** the entry point now EXISTS — `scripts/run-gitlab.sh` (detect→gitlab gate,
-  fetch the MR via `glab`, run the brain with `post:true`, post via the `gl.*` adapter; no branch pushes;
-  refuses on a GitHub repo). Plumbing + the github-refusal gate are verified locally. **Still needs one
-  live run** against a real MR with `glab` authed (e.g. a self-hosted GitLab instance over VPN, on a throwaway MR):
-  confirm post-overview / positioned inline findings / resolve / reply / edit-overview. The known risk is
-  `gl.postReview` inline-comment positioning (needs the MR `diff_refs`) — flagged at review-platform.ts:250.
+- **#11 / #74 / #73 — GitLab mode (live verify pending).** The entry point exists (`scripts/run-gitlab.sh`)
+  and the review **engine** ran end-to-end live this session (holistic → gather → squad → check →
+  `REQUEST_CHANGES`, the check pass refuted a false-positive). The inline-positioning bug it surfaced is
+  **fixed** (#74 — the former `review-platform.ts:250` risk, now nested-JSON `position` + `DiffNote`
+  verify) and local memory moved out of the product repo (#73). **Still needs one full non-dry-run run**
+  against a real MR with `glab` authed (e.g. a self-hosted GitLab instance over VPN, throwaway MR): confirm
+  post-overview / inline `DiffNote`s (0 floating) / resolve / reply / edit-overview-in-place. #74 + #73
+  stay open until that run; #11 is the umbrella.
 - Minor: old stray branch `claude/add-review-logging-xcGnC`; the `pr-12-cc-review-output` orphan log branch.
 
 ### Reference
