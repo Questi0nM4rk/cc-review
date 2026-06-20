@@ -190,3 +190,14 @@ enable` only after the fix is in. (A loop is also visible as a burst of runs: `g
 
 Two layers because they distribute at different speeds: scrubbing the comment stops the loop instantly
 everywhere; the author guard is the belt-and-suspenders that doesn't depend on comment hygiene.
+
+---
+
+## Incident: agentapi `stable` ≠ done — the OR-gate false-pass (#75)
+
+**The trap.** `agentapi`'s `stable` status means the agent is **idle**, not that the review finished. A run that stalled at an unmatched interactive prompt (e.g. a Web-Search approval gate with a non-numeric menu, which the invoker's numbered-menu filter correctly skipped) went idle and reached `stable` with no review posted. The old post-run gate was an OR: pass if the **review count** rose OR the **comment count** rose. Because the overview comment is posted at the start of the pipeline (before the verdict), comment count always rose on a stalled run — so the gate accepted it with zero formal review posted. The run reported success; GitHub had only an overview comment and no verdict.
+
+**Three-leg fix (all three must hold):**
+1. **Opt-in done-marker gating on `stable`.** `ci-run.sh` passes `--done-marker '<<<CC_REVIEW_COMPLETE>>>'` to `agentapi-claude.sh`. The invoker treats `stable` as done ONLY after that exact string has appeared in the conversation — a stalled run never emits it. Backfill and local callers omit the flag and keep the legacy bare-`stable` behaviour. Auto-approval was also tightened: only a real numbered selection menu triggers it, capped at `AGENTAPI_MAX_APPROVALS` (default 12), so a non-numeric prompt no longer misfires.
+2. **Written completion sentinel.** The review prompt instructs the orchestrator to write the brain's return JSON to `.cc-run/cc-result.json` immediately after the Workflow returns, then print `<<<CC_REVIEW_COMPLETE>>>`. The sentinel is proof the Workflow actually returned; its absence means the run ended before the brain finished regardless of what `stable` reported.
+3. **Mode-aware gate in `scripts/gate.mjs`.** The post-run verdict is delegated to this pure module: a normal review (`first`/`rerun`) must raise the **formal review count** (a `POST /pulls/N/reviews` — an overview comment is not a review); `answer`/`rerun-blocked` accept comment growth; a missing sentinel fails even on `stable`; an unknown mode passes through (forward-compatible). The OR-gate is gone — overview comment alone never passes.

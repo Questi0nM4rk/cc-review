@@ -51,6 +51,16 @@ scripts/agentapi-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/t
 > conversation is a best-effort log; correctness is verified against **GitHub ground truth**, never by
 > parsing it. Validate the plumbing with `scripts/agentapi-claude.sh --selftest` (a `bash` stand-in — no
 > claude, no quota; reachability only, since a generic command can't reach `stable`).
+
+### 2a. Run completion contract (three-leg, #75)
+
+A successful run requires ALL THREE legs to hold — `stable` alone is not sufficient:
+
+1. **agentapi `stable` gated on the done-marker.** `ci-run.sh` passes `--done-marker '<<<CC_REVIEW_COMPLETE>>>'` to the invoker. `stable` is treated as done ONLY after that marker has appeared in the conversation. A run that went idle at an unmatched interactive prompt (e.g. a Web-Search approval gate) reaches `stable` without the marker — the invoker keeps polling rather than declaring completion. Callers without `--done-marker` (backfill, selftest, local) keep the bare-`stable` behaviour.
+
+2. **Completion sentinel written by the orchestrator.** The review prompt instructs the orchestrator, after the Workflow returns, to write the brain's return JSON verbatim to `.cc-run/cc-result.json` using a `cat` heredoc, then print `<<<CC_REVIEW_COMPLETE>>>` as its final output. The sentinel is the proof that the Workflow actually returned; its absence (or `ok: false`) means the run finished in an error state.
+
+3. **Mode-aware GitHub ground-truth cross-check (`scripts/gate.mjs`).** `ci-run.sh` delegates the pass/fail verdict to this pure, env-driven module after each run. It reads the sentinel and the before/after GitHub artifact counts, then decides per mode: a normal review (`first`/`rerun`) must raise the **formal review count** (a `POST /pulls/N/reviews` — an overview comment alone does not count); `answer`/`rerun-blocked` accept comment growth instead; a missing or `ok: false` sentinel fails the run even when agentapi reported `stable`; an unknown mode passes through (forward-compatible). The root cause of #75 was the old OR-gate: because the overview comment is posted before the verdict, comment count always rose on a stalled run, so the gate accepted it with no formal review posted.
 >
 > **Fresh-runner boot (RESOLVED — CI is live):** `CLAUDE_CODE_OAUTH_TOKEN` (an `sk-ant-oat01` subscription
 > token) **does** authenticate interactive `claude` on a CI runner. The real fresh-runner work was clearing
