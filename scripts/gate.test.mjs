@@ -54,6 +54,16 @@ test("6. rerun, review count rose → PASS", () => {
   assert.equal(decideGate(ok("rerun"), counts("2", "3", "5", "5"), { runRc: 0, post: true }).pass, true);
 });
 
+test("6b. rerun, review count FLAT but sentinel idempotent:true (byte-identical re-post) → PASS (#75 AC)", () => {
+  assert.equal(decideGate(ok("rerun", { idempotent: true }), counts("1", "1", "5", "5"), { runRc: 0, post: true }).pass, true);
+});
+
+test("6c. rerun, review count FLAT and NOT idempotent → FAIL (a genuinely missing verdict)", () => {
+  const v = decideGate(ok("rerun"), counts("1", "1", "5", "5"), { runRc: 0, post: true });
+  assert.equal(v.pass, false);
+  assert.match(v.reason, /no new formal cc-review review/);
+});
+
 test("7. answer mode, comment rose → PASS", () => {
   assert.equal(decideGate(ok("answer"), counts("0", "0", "1", "2"), { runRc: 0, post: true }).pass, true);
 });

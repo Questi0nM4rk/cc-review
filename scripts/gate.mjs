@@ -51,6 +51,10 @@ export function decideGate(result, counts, opts) {
   const mode = String(result.mode || "");
   if (REVIEW_MODES.has(mode)) {
     if (rose(counts.beforeReviews, counts.afterReviews)) return { pass: true, reason: "" };
+    // Recognized idempotent duplicate (#75 AC): the brain re-posted a byte-identical review, the adapter
+    // skipped it (posted:false, duplicate:true) so the count stays flat — but the verdict is already on
+    // the PR. The brain surfaces this as result.idempotent. Accept it instead of false-failing.
+    if (result.idempotent === true) return { pass: true, reason: "" };
     if (unreadable(counts.beforeReviews, counts.afterReviews)) return { pass: true, reason: "" };
     return { pass: false, reason: `the run finished in '${mode}' mode but no new formal cc-review review appeared on the PR — the verdict was not posted (an overview comment alone does not count)` };
   }
