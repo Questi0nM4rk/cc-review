@@ -114,7 +114,7 @@ MSG_CLAUSE=""
 [ -s /tmp/cc-user-msg.txt ] && MSG_CLAUSE=", and the maintainer @cc-review message from /tmp/cc-user-msg.txt"
 # bot_dir is passed via args (not an env var): the sandboxed brain agents don't inherit env, and
 # the agent shell can't expand $CC_REVIEW_BOT_DIR — it would collapse to the consumer repo root.
-PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs' and args { bot_dir: '${CC_REVIEW_BOT_DIR}' }. Run it to completion and report its return value verbatim as JSON. The workflow reads PR number, repo, post-flag, and project config from /tmp/cc-input.json, /tmp, and .cc-review.yaml${MSG_CLAUSE}."
+PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs' and args { bot_dir: '${CC_REVIEW_BOT_DIR}' }. Run it to completion. The workflow reads PR number, repo, post-flag, and project config from /tmp/cc-input.json, /tmp, and .cc-review.yaml${MSG_CLAUSE}. When the Workflow tool RETURNS, write its return value verbatim as JSON to ${WS}/.cc-run/cc-result.json using a bash cat-heredoc (NOT the Write tool) — this file is the run's completion sentinel. Write it ONLY if the Workflow returned; if it did not return, write nothing. Then, as your final output, print this exact line on its own and nothing after it: <<<CC_REVIEW_COMPLETE>>>"
 
 # Ground-truth snapshot (for the post-run gate): count the bot's EXISTING reviews + issue comments
 # on the PR BEFORE the run. After the run we re-count and require the relevant one to actually go up
@@ -145,6 +145,7 @@ BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
 # conversation is only a best-effort log — we never parse it for the verdict.
 printf '%s' "$PROMPT" > /tmp/run/prompt.txt
 "$CC_REVIEW_BOT_DIR/scripts/agentapi-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
+  --done-marker '<<<CC_REVIEW_COMPLETE>>>' \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
   --claude-arg --dangerously-skip-permissions \
   --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
