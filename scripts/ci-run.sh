@@ -155,29 +155,24 @@ cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true
 
 # ── Everything below ALWAYS runs (even if the review died mid-way) ───────────
 RUN_FAILED=0
-REASON=""
 
-# 4) Completion: agentapi-claude.sh exits 0 ONLY when the agent's turn completed (status returned to
-# "stable"). A non-zero exit = timed out / claude never went ready (auth?) / died — often a usage limit.
-if [ "$RUN_RC" -ne 0 ]; then
-  REASON="the review did not signal completion (timed out or died mid-review — often a usage/quota limit)"
-fi
-
-# 4b) Verify against GitHub GROUND TRUTH, never a self-report (the spine principle — and the TUI gives us
-# no parseable return anyway): when posting was requested, SOMETHING must have landed — a review
-# (first/rerun) or an issue comment (overview / answer / rerun-blocked). If BOTH snapshots are readable
-# and NEITHER count rose, the post silently failed. A snapshot error degrades to trusting the run (skip),
-# not a false fail.
-if [ -z "$REASON" ] && [ "$CC_POST" = "1" ]; then
+# 4) Completion + ground-truth gate (#75). The verdict logic lives in scripts/gate.mjs (pure,
+# unit-tested) so it can't drift like the old OR-rule did; this shell only gathers inputs and acts on
+# the result. Surface the sentinel into the log dir first so a post-mortem can read the brain's return.
+cp .cc-run/cc-result.json /tmp/run/cc-result.json 2>/dev/null || true
+AFTER_REVIEWS="ERR"; AFTER_COMMENTS="ERR"
+if [ "$CC_POST" = "1" ]; then
   AFTER_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
   AFTER_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
-  if [ "$BEFORE_REVIEWS" != "ERR" ] && [ "$AFTER_REVIEWS" != "ERR" ] \
-     && [ "$BEFORE_COMMENTS" != "ERR" ] && [ "$AFTER_COMMENTS" != "ERR" ] \
-     && [ "${AFTER_REVIEWS:-0}" -le "${BEFORE_REVIEWS:-0}" ] \
-     && [ "${AFTER_COMMENTS:-0}" -le "${BEFORE_COMMENTS:-0}" ] 2>/dev/null; then
-    REASON="the run completed but no new cc-review review or comment appeared on PR #${PR_NUMBER} — the post silently failed (verified against GitHub, not a self-report)"
-  fi
 fi
+# gate.mjs reads the sentinel (.cc-run/cc-result.json — absent ⇒ the run never finished, even if
+# agentapi said 'stable') and cross-checks GitHub PER MODE: a normal review (first/rerun) must raise
+# the FORMAL review count; answer/rerun-blocked accept comment growth; an overview comment alone never
+# passes. Non-empty stdout = the failure reason; empty = verified success. gate.mjs always exits 0.
+REASON="$(SENTINEL="$WS/.cc-run/cc-result.json" RUN_RC="$RUN_RC" CC_POST="$CC_POST" \
+  BEFORE_REVIEWS="$BEFORE_REVIEWS" AFTER_REVIEWS="$AFTER_REVIEWS" \
+  BEFORE_COMMENTS="$BEFORE_COMMENTS" AFTER_COMMENTS="$AFTER_COMMENTS" \
+  node "$CC_REVIEW_BOT_DIR/scripts/gate.mjs" 2>/dev/null)"
 
 if [ -n "$REASON" ]; then
   echo "::error::cc-review did not complete: ${REASON}"
