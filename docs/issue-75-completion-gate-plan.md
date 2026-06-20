@@ -97,9 +97,16 @@ test("2. #75 REPRO: overview posted, workflow froze before Decide, status stable
   assert.match(v.reason, /no completion result|did not finish|stalled/i);
 });
 
-test("3. sentinel present but ok!==true → FAIL", () => {
+test("3. sentinel present but ok!==true (no reason) → FAIL with the generic stalled message", () => {
   const v = decideGate({ ok: false, mode: "first" }, counts("0", "1", "0", "1"), { runRc: 0, post: true });
   assert.equal(v.pass, false);
+  assert.match(v.reason, /no completion result|did not finish|stalled/i);
+});
+
+test("3b. sentinel ok:false WITH a reason (intentional abort: empty diff / unresolved PR) → FAIL surfacing that reason", () => {
+  const v = decideGate({ ok: false, reason: "empty diff — the fetch returned no changes to review" }, counts("0", "0", "0", "0"), { runRc: 0, post: true });
+  assert.equal(v.pass, false);
+  assert.match(v.reason, /empty diff/);
 });
 
 test("4. first review, formal review count rose → PASS", () => {
@@ -190,10 +197,15 @@ export function decideGate(result, counts, opts) {
   if (opts.runRc !== 0) {
     return { pass: false, reason: "the review did not signal completion (timed out or died mid-review — often a usage/quota limit)" };
   }
-  // 2) Completion sentinel: the orchestrator writes the brain's return JSON LAST. Absent or not
-  //    ok => the workflow did not finish, even though agentapi reported 'stable' (idle ≠ done).
+  // 2) Completion sentinel: the orchestrator writes the brain's return JSON LAST.
+  //    - ABSENT => the workflow never finished (froze at a prompt while agentapi reported 'stable').
+  //    - PRESENT but ok!==true => the brain INTENTIONALLY aborted (empty diff / unresolved PR /
+  //      wrong PR — strict-review.mjs:752-759); surface ITS reason so the failure comment is accurate.
   if (!result || result.ok !== true) {
-    return { pass: false, reason: "the run reported no completion result — the strict-review workflow did not finish (it may have stalled at an interactive prompt while agentapi reported 'stable')" };
+    const why = (result && typeof result.reason === "string" && result.reason.trim())
+      ? result.reason
+      : "the run reported no completion result — the strict-review workflow did not finish (it may have stalled at an interactive prompt while agentapi reported 'stable')";
+    return { pass: false, reason: why };
   }
   // 3) Nothing to verify: posting wasn't requested, or the brain ran a local dry-run.
   if (!opts.post || result.localDryRun === true) return { pass: true, reason: "" };
@@ -234,7 +246,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test scripts/gate.test.mjs`
-Expected: PASS — `# pass 13  # fail 0`.
+Expected: PASS — `# pass 14  # fail 0`.
 
 - [ ] **Step 5: Wire the test into CI** — `.github/workflows/ci.yml:34`
 
@@ -426,7 +438,7 @@ Expected: no output (exit 0).
 - [ ] **Step 3: Re-run the gate unit test (no regression from the wiring)**
 
 Run: `node --test scripts/gate.test.mjs`
-Expected: PASS — `# pass 13  # fail 0`.
+Expected: PASS — `# pass 14  # fail 0`.
 
 - [ ] **Step 4: Commit**
 
