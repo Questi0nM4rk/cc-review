@@ -193,10 +193,12 @@ jq -n --arg c "$PROMPT" '{content:$c, type:"user"}' \
 # "Yes, run it" choice in every such Claude Code prompt. This is just answering a known interactive gate
 # (what a human would press); correctness is still verified against GitHub ground truth, never this log.
 last_msg() { curl -s --max-time 8 "${BASE}/messages" 2>/dev/null | jq -r '(.messages // [])[-1].content // ""' 2>/dev/null; }
-# True iff the marker string appears anywhere in the conversation. The orchestrator prints it only
-# AFTER the workflow returned + the result sentinel was written — so a match means "really finished",
-# not merely "idle". (grep -F: the marker is a literal, e.g. <<<CC_REVIEW_COMPLETE>>>.)
-convo_has() { curl -s --max-time 8 "${BASE}/messages" 2>/dev/null | jq -r '(.messages // [])[].content' 2>/dev/null | grep -qF "$1"; }
+# True iff the marker appears in an AGENT-role message. The orchestrator prints it only AFTER the
+# workflow returned + the sentinel was written, so an agent-role match means "really finished", not
+# merely "idle". MUST be scoped to role=="agent": the user PROMPT contains the literal marker (it tells
+# the agent what to print) and agentapi logs user messages too — grepping all roles would match the
+# prompt immediately and defeat the gate. (grep -F: the marker is a literal, e.g. <<<CC_REVIEW_COMPLETE>>>.)
+convo_has() { curl -s --max-time 8 "${BASE}/messages" 2>/dev/null | jq -r '(.messages // [])[] | select(.role=="agent") | .content' 2>/dev/null | grep -qF "$1"; }
 sleep 3   # let the status flip to "running" before we start checking for the return to "stable"
 elapsed=0; done=0; approvals=0
 while [ "$elapsed" -lt "$MAX" ]; do
@@ -207,7 +209,7 @@ while [ "$elapsed" -lt "$MAX" ]; do
   # not consume trailing input" warning (#75). Capped at MAXAPP — a legit review hits very few real gates.
   case "$msg" in
     *"Run a dynamic workflow?"*|*"Do you want to proceed?"*)
-      if printf '%s' "$msg" | grep -qE '(^|[[:space:]])[❯>]?[[:space:]]*1[.)]' && [ "$approvals" -lt "$MAXAPP" ]; then
+      if printf '%s' "$msg" | grep -qE '^[[:space:]]*[❯>]?[[:space:]]*1[.)]' && [ "$approvals" -lt "$MAXAPP" ]; then
         jq -n '{content:"1", type:"user"}' \
           | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
         approvals=$((approvals + 1))
