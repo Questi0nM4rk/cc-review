@@ -12,3 +12,8 @@ node_modules/
 # Playwright MCP scratch (snapshots, screenshots, downloaded App keys) — used
 # locally to set up / recover the GitHub App; never part of a CI run.
 .playwright-mcp/
+
+# Local code-understanding artifacts (sentrux session baseline, graphify graph) — per-dev,
+# never committed; regenerated on demand (`sentrux gate --save .`, `graphify update`).
+.sentrux/
+graphify-out/

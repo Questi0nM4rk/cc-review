@@ -25,14 +25,16 @@
 set -uo pipefail
 
 PORT="${AGENTAPI_PORT:-3284}"; POLL="${AGENTAPI_POLL_SECS:-4}"; READY="${AGENTAPI_READY_SECS:-40}"; MAX="${AGENTAPI_MAX_SECS:-2400}"
+MAXAPP="${AGENTAPI_MAX_APPROVALS:-12}"   # cap on auto-approved interactive prompts (was a hardcoded 40)
 BASE="http://localhost:${PORT}"
 
-PROMPT_FILE=""; OUT_FILE="/dev/stdout"; SELFTEST=0; CLAUDE_ARGS=()
+PROMPT_FILE=""; OUT_FILE="/dev/stdout"; SELFTEST=0; CLAUDE_ARGS=(); DONE_MARKER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
     --out)         OUT_FILE="$2"; shift 2 ;;
     --claude-arg)  CLAUDE_ARGS+=("$2"); shift 2 ;;
+    --done-marker) DONE_MARKER="$2"; shift 2 ;;
     --selftest)    SELFTEST=1; shift ;;
     *) echo "agentapi-claude: unknown arg '$1'" >&2; exit 2 ;;
   esac
@@ -191,22 +193,37 @@ jq -n --arg c "$PROMPT" '{content:$c, type:"user"}' \
 # "Yes, run it" choice in every such Claude Code prompt. This is just answering a known interactive gate
 # (what a human would press); correctness is still verified against GitHub ground truth, never this log.
 last_msg() { curl -s --max-time 8 "${BASE}/messages" 2>/dev/null | jq -r '(.messages // [])[-1].content // ""' 2>/dev/null; }
+# True iff the marker appears in an AGENT-role message. The orchestrator prints it only AFTER the
+# workflow returned + the sentinel was written, so an agent-role match means "really finished", not
+# merely "idle". MUST be scoped to role=="agent": the user PROMPT contains the literal marker (it tells
+# the agent what to print) and agentapi logs user messages too — grepping all roles would match the
+# prompt immediately and defeat the gate. (grep -F: the marker is a literal, e.g. <<<CC_REVIEW_COMPLETE>>>.)
+convo_has() { curl -s --max-time 8 "${BASE}/messages" 2>/dev/null | jq -r '(.messages // [])[] | select(.role=="agent") | .content' 2>/dev/null | grep -qF "$1"; }
 sleep 3   # let the status flip to "running" before we start checking for the return to "stable"
 elapsed=0; done=0; approvals=0
 while [ "$elapsed" -lt "$MAX" ]; do
   st="$(status)"
-  case "$(last_msg)" in
+  msg="$(last_msg)"
+  # Auto-approve ONLY a real numbered selection menu (a "1." / "1)" / "❯ 1" line is present) — not any
+  # message whose prose merely contains the question. Sending "1" to a non-menu produced the "Parser did
+  # not consume trailing input" warning (#75). Capped at MAXAPP — a legit review hits very few real gates.
+  case "$msg" in
     *"Run a dynamic workflow?"*|*"Do you want to proceed?"*)
-      if [ "$approvals" -lt 40 ]; then
+      if printf '%s' "$msg" | grep -qE '^[[:space:]]*[❯>]?[[:space:]]*1[.)]' && [ "$approvals" -lt "$MAXAPP" ]; then
         jq -n '{content:"1", type:"user"}' \
           | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
         approvals=$((approvals + 1))
-        echo "agentapi-claude: auto-approved an interactive prompt (#${approvals})" >&2
+        echo "agentapi-claude: auto-approved an interactive prompt (#${approvals}/${MAXAPP})" >&2
         sleep "$POLL"; elapsed=$((elapsed + POLL)); continue
       fi
       ;;
   esac
-  [ "$st" = "stable" ] && { done=1; break; }
+  # COMPLETION: 'stable' counts as done ONLY when a done-marker was requested AND it has appeared.
+  # With no marker (backfill/selftest/local), fall back to bare 'stable' (legacy behaviour).
+  if [ "$st" = "stable" ]; then
+    if [ -z "$DONE_MARKER" ] || convo_has "$DONE_MARKER"; then done=1; break; fi
+    # stable but the marker hasn't been emitted → mid-run or stuck at an unanswered prompt; keep waiting.
+  fi
   sleep "$POLL"; elapsed=$((elapsed + POLL))
 done
 
@@ -219,6 +236,10 @@ if [ "$done" = "1" ]; then
   echo "agentapi-claude: completed (status stable after ${elapsed}s)" >&2
   exit 0
 else
-  echo "agentapi-claude: TIMED OUT after ${MAX}s (status never returned to 'stable')" >&2
+  if [ -n "$DONE_MARKER" ]; then
+    echo "agentapi-claude: TIMED OUT after ${MAX}s — completion marker '${DONE_MARKER}' never appeared (workflow stalled or never finished)" >&2
+  else
+    echo "agentapi-claude: TIMED OUT after ${MAX}s (status never returned to 'stable')" >&2
+  fi
   exit 1
 fi

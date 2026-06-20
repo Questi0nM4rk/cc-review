@@ -200,6 +200,10 @@ const CHECK_SCHEMA = {
 
 const THREAD_ACTION_SCHEMA = { type: "object", required: ["thread_id", "action", "reason"], additionalProperties: false, properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["resolve", "keep", "reply"] }, reason: { type: "string" }, reply_body: { type: "string" }, known_pattern: { type: "string" } } };
 const SIGCHANGE_SCHEMA = { type: "object", required: ["significant", "reason"], additionalProperties: false, properties: { significant: { type: "boolean" }, reason: { type: "string" } } };
+// Post-review adapter result (review-platform.ts post-review): `posted` + the idempotent-`duplicate`
+// flag (true when an identical already-posted review made the adapter skip re-posting). The #75
+// completion gate reads result.idempotent (derived below) to accept that case despite a flat count.
+const POST_RESULT_SCHEMA = { type: "object", required: ["posted"], additionalProperties: true, properties: { posted: { type: "boolean" }, duplicate: { type: "boolean" }, event: { type: "string" } } };
 
 // ============================================================================
 // PROMPTS
@@ -314,7 +318,7 @@ const reviewPostPrompt = (ctx) =>
   `Apply the review to ${ctx.repo} PR/MR #${ctx.pr_number} via the adapter, from the repo root. Write every payload file with bash (cat heredoc), NOT the Write tool — under ${SCRATCH}/. In order:\n` +
   `1. reply on threads (BEFORE resolving, so it lands on the open thread): ${JSON.stringify(ctx.replies)} — for each: write reply_body to ${SCRATCH}/cc-reply.md and run tsx ${ADAPTER} reply --pr ${ctx.pr_number} --thread <thread_id> --comment-id <comment_db_id> --body-file ${SCRATCH}/cc-reply.md\n` +
   `2. resolve threads: ${JSON.stringify(ctx.resolve_ids)} — for each: tsx ${ADAPTER} resolve --pr ${ctx.pr_number} --thread <id>\n` +
-  `3. post the review: write this payload to ${SCRATCH}/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload ${SCRATCH}/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nConfirm what you posted in one line.`;
+  `3. post the review: write this payload to ${SCRATCH}/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload ${SCRATCH}/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nThen report ONLY the post-review adapter's JSON result from step 3 verbatim — its "posted" (boolean), "duplicate" (boolean; true if the adapter skipped re-posting an identical review already present), and "event".`;
 
 // Post-phase deterministic writes, merged into ONE agent turn (was two: review-state marker +
 // Phase-0 findings log) to halve the Post-phase agent calls. Both are run OUTPUT (not learned memory)
@@ -971,7 +975,7 @@ const findingRows = inlineFindings(kept).map((e) => {
 let posted = null;
 if (post) {
   phase("Post");
-  posted = await agent(reviewPostPrompt({ repo, pr_number: prNumber, resolve_ids: resolveIds, replies, payload }), { model: "sonnet", label: "post-review", phase: "Post" });
+  posted = await agent(reviewPostPrompt({ repo, pr_number: prNumber, resolve_ids: resolveIds, replies, payload }), { schema: POST_RESULT_SCHEMA, model: "sonnet", label: "post-review", phase: "Post" });
   // One merged agent turn writes both deterministic run-output files: the review-state marker (always —
   // reaching Post means a review ran, since answer-mode and the rerun-blocked gate return earlier, so
   // every posted review re-stamps the sig-change baseline) and the Phase-0 findings log (only when there
@@ -987,4 +991,4 @@ if (totals.confirmed > 0 || totals.resolved > 0 || totals.replied > 0) {
   memory = await agent(memoryPrompt({ event, confirmed: totals.confirmed, resolved: totals.resolved, stillOpen, known_patterns: allKnown, findings: memFindings }), { model: "sonnet", label: "memory", phase: "Memory" });
 }
 
-return { ok: true, platform, repo, prNumber, localDryRun, mode: isRerun ? "rerun" : "first", reviewed, difficulty, event, totals, threadActions, overview: overviewMd, payload, posted, memory };
+return { ok: true, platform, repo, prNumber, localDryRun, mode: isRerun ? "rerun" : "first", reviewed, difficulty, event, totals, threadActions, overview: overviewMd, payload, posted, idempotent: posted?.duplicate === true, memory };
