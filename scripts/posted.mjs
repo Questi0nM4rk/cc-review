@@ -6,6 +6,10 @@
 // older commit does NOT count as this run having posted.
 
 export function classifyPosted(reviews, inlineComments, headSha, botLogin) {
+  // Defensive: an empty headSha must never "match" a review/comment whose commit_id is also absent
+  // (`"" === ""`). The verb's requireFlag makes this unreachable in production, but the pure fn must be
+  // correct standalone — no head to scope against ⇒ nothing landed for this run.
+  if (!headSha) return { reviews: 0, actionItems: 0, landed: false };
   const mine = (x) => ((x?.user?.login ?? "") === botLogin) && ((x?.commit_id ?? "") === headSha);
   const r = (Array.isArray(reviews) ? reviews : []).filter(mine).length;
   const a = (Array.isArray(inlineComments) ? inlineComments : []).filter(mine).length;

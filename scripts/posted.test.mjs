@@ -29,3 +29,8 @@ test("tolerates missing fields / non-arrays", () => {
   assert.equal(classifyPosted(null, undefined, HEAD, BOT).landed, false);
   assert.equal(classifyPosted([{}], [{ user: {} }], HEAD, BOT).landed, false);
 });
+
+test("empty headSha never matches a commit_id-less object → NOT landed", () => {
+  // guard: "" === "" must not count a bot review whose commit_id is absent.
+  assert.deepEqual(classifyPosted([{ user: { login: BOT } }], [], "", BOT), { reviews: 0, actionItems: 0, landed: false });
+});
