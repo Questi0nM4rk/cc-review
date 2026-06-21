@@ -25,7 +25,7 @@
 set -uo pipefail
 
 PORT="${AGENTAPI_PORT:-3284}"; POLL="${AGENTAPI_POLL_SECS:-4}"; READY="${AGENTAPI_READY_SECS:-40}"; MAX="${AGENTAPI_MAX_SECS:-2400}"
-MAXAPP="${AGENTAPI_MAX_APPROVALS:-12}"   # cap on auto-approved interactive prompts (was a hardcoded 40)
+MAXAPP="${AGENTAPI_MAX_APPROVALS:-40}"   # runaway backstop on auto-approved consent prompts
 BASE="http://localhost:${PORT}"
 
 PROMPT_FILE=""; OUT_FILE="/dev/stdout"; SELFTEST=0; CLAUDE_ARGS=(); DONE_MARKER=""
@@ -137,6 +137,12 @@ else
   PROMPT="$(cat "$PROMPT_FILE")"
 fi
 
+# NOTE on root + bypass: Claude REFUSES `--dangerously-skip-permissions` under root ("cannot be used
+# with root/sudo privileges"), so on a root CI runner bypass mode only engages if a sandbox is signalled
+# (env IS_SANDBOX). That assertion is made by the CALLER that knows it runs in an isolated runner —
+# ci-run.sh exports IS_SANDBOX=1 — NOT inferred from uid here, so a stray root invocation of this general
+# invoker outside that pipeline does not auto-bypass. (Verified against the claude 2.1.x binary.)
+
 # Start the agentapi server (it owns the interactive agent's pty) in the background.
 "${SERVER_CMD[@]}" >/tmp/agentapi-server.log 2>&1 &
 SERVER_PID=$!
@@ -204,12 +210,16 @@ elapsed=0; done=0; approvals=0
 while [ "$elapsed" -lt "$MAX" ]; do
   st="$(status)"
   msg="$(last_msg)"
-  # Auto-approve ONLY a real numbered selection menu (a "1." / "1)" / "❯ 1" line is present) — not any
-  # message whose prose merely contains the question. Sending "1" to a non-menu produced the "Parser did
-  # not consume trailing input" warning (#75). Capped at MAXAPP — a legit review hits very few real gates.
+  # The outer case matches a SPECIFIC Claude Code consent prompt; answer "1" (= Yes / first option).
+  # With ci-run.sh asserting IS_SANDBOX so --dangerously-skip-permissions engages under root, the
+  # per-command "Do you want to proceed?" storm no longer appears, so this mainly clears the one-time
+  # "Run a dynamic workflow?" consent nothing else suppresses. Structural guard: require a real
+  # numbered-menu line present — matching a NON-cursor option (e.g. "2."/"3)") so it's locale-safe and
+  # does NOT depend on the multibyte ❯ cursor (whose anchored regex was brittle and stalled a real run,
+  # #75 re-test). Blocks a stray "1" to prose that merely quotes the phrase. MAXAPP backstops a runaway.
   case "$msg" in
     *"Run a dynamic workflow?"*|*"Do you want to proceed?"*)
-      if printf '%s' "$msg" | grep -qE '^[[:space:]]*[❯>]?[[:space:]]*1[.)]' && [ "$approvals" -lt "$MAXAPP" ]; then
+      if printf '%s' "$msg" | grep -qE '^[[:space:]]*[0-9][.)]' && [ "$approvals" -lt "$MAXAPP" ]; then
         jq -n '{content:"1", type:"user"}' \
           | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
         approvals=$((approvals + 1))

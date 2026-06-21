@@ -36,7 +36,8 @@ jobs:
             scripts/helpers.test.mjs \
             scripts/backfill-helpers.test.mjs \
             scripts/harvest-outcomes.test.mjs \
-            scripts/gate.test.mjs
+            scripts/gate.test.mjs \
+            scripts/posted.test.mjs
 
       - name: Fetch identity-gate contract test
         run: node scripts/verify-gate.test.mjs

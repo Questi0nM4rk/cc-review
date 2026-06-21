@@ -204,6 +204,9 @@ const SIGCHANGE_SCHEMA = { type: "object", required: ["significant", "reason"], 
 // flag (true when an identical already-posted review made the adapter skip re-posting). The #75
 // completion gate reads result.idempotent (derived below) to accept that case despite a flat count.
 const POST_RESULT_SCHEMA = { type: "object", required: ["posted"], additionalProperties: true, properties: { posted: { type: "boolean" }, duplicate: { type: "boolean" }, event: { type: "string" } } };
+// Result of the deterministic verify-posted adapter check (#75 retry loop): did a verdict actually land
+// on the PR head? `landed` is the retry decision; reviews/actionItems are for the log.
+const VERIFY_SCHEMA = { type: "object", required: ["landed"], additionalProperties: true, properties: { landed: { type: "boolean" }, reviews: { type: "integer" }, actionItems: { type: "integer" } } };
 
 // ============================================================================
 // PROMPTS
@@ -319,6 +322,12 @@ const reviewPostPrompt = (ctx) =>
   `1. reply on threads (BEFORE resolving, so it lands on the open thread): ${JSON.stringify(ctx.replies)} — for each: write reply_body to ${SCRATCH}/cc-reply.md and run tsx ${ADAPTER} reply --pr ${ctx.pr_number} --thread <thread_id> --comment-id <comment_db_id> --body-file ${SCRATCH}/cc-reply.md\n` +
   `2. resolve threads: ${JSON.stringify(ctx.resolve_ids)} — for each: tsx ${ADAPTER} resolve --pr ${ctx.pr_number} --thread <id>\n` +
   `3. post the review: write this payload to ${SCRATCH}/cc-review-payload.json and run tsx ${ADAPTER} post-review --pr ${ctx.pr_number} --payload ${SCRATCH}/cc-review-payload.json\n   payload: ${JSON.stringify(ctx.payload)}\nThen report ONLY the post-review adapter's JSON result from step 3 verbatim — its "posted" (boolean), "duplicate" (boolean; true if the adapter skipped re-posting an identical review already present), and "event".`;
+
+// Make an agent run the DETERMINISTIC verify-posted verb and relay its JSON — the post-verify retry
+// loop's ground-truth check. The verb (review-platform.ts) is the code doing the check; the agent only
+// runs it and reports the result verbatim (correctness is the adapter's, never the LLM's judgement).
+const verifyPostedPrompt = (prNumber, headSha) =>
+  `Run exactly this command from the repo root and report ONLY its JSON result verbatim — do not interpret or summarize:\n  tsx ${ADAPTER} verify-posted --pr ${prNumber} --head-sha ${headSha}\nIt returns { reviews, actionItems, landed } where landed=true iff a cc-review review/approve OR inline action-item comments for head ${headSha} are present on the PR.`;
 
 // Post-phase deterministic writes, merged into ONE agent turn (was two: review-state marker +
 // Phase-0 findings log) to halve the Post-phase agent calls. Both are run OUTPUT (not learned memory)
@@ -972,15 +981,32 @@ const findingRows = inlineFindings(kept).map((e) => {
 });
 
 // ---- Post (only on explicit opt-in) ----------------------------------------
-let posted = null;
+// Post the review, then VERIFY against GitHub ground truth that a verdict actually landed (a
+// review/approve OR inline action items on THIS run's head), retrying the post up to 3× if not (#75).
+// The verify is deterministic (the verify-posted adapter verb) + GitHub-only; on GitLab (local) we post
+// once without the loop — the maintainer sees the result directly and the verb's gh queries don't apply.
+// On exhaustion we only log: the run then fails red at the runner gate (gate.mjs sees no new review) +
+// its status comment, per the #75 no-false-green contract — the brain posts no extra comment itself.
+let posted = null, postLanded = false;
 if (post) {
   phase("Post");
-  posted = await agent(reviewPostPrompt({ repo, pr_number: prNumber, resolve_ids: resolveIds, replies, payload }), { schema: POST_RESULT_SCHEMA, model: "sonnet", label: "post-review", phase: "Post" });
-  // One merged agent turn writes both deterministic run-output files: the review-state marker (always —
-  // reaching Post means a review ran, since answer-mode and the rerun-blocked gate return earlier, so
-  // every posted review re-stamps the sig-change baseline) and the Phase-0 findings log (only when there
-  // are inline findings — APPROVE / out-of-diff-only runs leave it untouched). Was two sonnet calls.
-  await agent(postOpsPrompt(prNumber, headSha, files, event, findingRows), { model: "sonnet", label: "post-ops", phase: "Post" });
+  const MAX_POST_ATTEMPTS = 3;
+  const canVerify = platform === "github";
+  for (let attempt = 1; attempt <= MAX_POST_ATTEMPTS && !postLanded; attempt++) {
+    posted = await agent(reviewPostPrompt({ repo, pr_number: prNumber, resolve_ids: resolveIds, replies, payload }), { schema: POST_RESULT_SCHEMA, model: "sonnet", label: `post-review${attempt > 1 ? `:retry${attempt - 1}` : ""}`, phase: "Post" });
+    if (!canVerify) { postLanded = true; break; }
+    const v = await agent(verifyPostedPrompt(prNumber, headSha), { schema: VERIFY_SCHEMA, model: "sonnet", label: `verify-posted:${attempt}`, phase: "Post" });
+    postLanded = v?.landed === true;
+    if (!postLanded) log(`post attempt ${attempt}/${MAX_POST_ATTEMPTS}: no review/approve or action items landed on ${headSha} — retrying`);
+  }
+  if (postLanded) {
+    // One merged agent turn writes both deterministic run-output files: the review-state marker (always —
+    // reaching here means a verdict landed) and the Phase-0 findings log (only when there are inline
+    // findings — APPROVE / out-of-diff-only runs leave it untouched).
+    await agent(postOpsPrompt(prNumber, headSha, files, event, findingRows), { model: "sonnet", label: "post-ops", phase: "Post" });
+  } else {
+    log(`POST FAILED: nothing landed after ${MAX_POST_ATTEMPTS} attempts — the run will fail at the gate`);
+  }
 }
 
 // ---- Memory -----------------------------------------------------------------
@@ -991,4 +1017,4 @@ if (totals.confirmed > 0 || totals.resolved > 0 || totals.replied > 0) {
   memory = await agent(memoryPrompt({ event, confirmed: totals.confirmed, resolved: totals.resolved, stillOpen, known_patterns: allKnown, findings: memFindings }), { model: "sonnet", label: "memory", phase: "Memory" });
 }
 
-return { ok: true, platform, repo, prNumber, localDryRun, mode: isRerun ? "rerun" : "first", reviewed, difficulty, event, totals, threadActions, overview: overviewMd, payload, posted, idempotent: posted?.duplicate === true, memory };
+return { ok: true, platform, repo, prNumber, localDryRun, mode: isRerun ? "rerun" : "first", reviewed, difficulty, event, totals, threadActions, overview: overviewMd, payload, posted, idempotent: posted?.duplicate === true, postLanded, memory };

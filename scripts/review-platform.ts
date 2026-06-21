@@ -29,6 +29,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { classifyPosted } from "./posted.mjs";
 
 // Hidden marker on the bot's overview comment. It doubles as the per-PR "already reviewed"
 // state flag (SPEC §4): get-overview matches it, and the brain embeds it in the overview body.
@@ -443,7 +444,7 @@ const gl = {
 function main() {
   const verb = process.argv[2];
   if (!verb || verb === "--help" || verb === "-h") {
-    process.stdout.write("verbs: detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply\n");
+    process.stdout.write("verbs: detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply | verify-posted\n");
     process.exit(verb ? 0 : 1);
   }
 
@@ -477,6 +478,18 @@ function main() {
       return out(d.platform === "github"
         ? gh.reply(d.repo, requireFlag("pr"), requireFlag("comment-id"), bodyFromFile())
         : gl.reply(d.repo, requireFlag("pr"), requireFlag("thread"), bodyFromFile()));
+    case "verify-posted": {
+      const pr = requireFlag("pr");
+      const headSha = requireFlag("head-sha");
+      const { repo } = detect();
+      const revR = run("gh", ["api", `repos/${repo}/pulls/${pr}/reviews`, "--paginate"]);
+      if (revR.code !== 0) die("gh list reviews failed", revR.stderr);
+      const reviews: Array<unknown> = JSON.parse(revR.stdout || "[]");
+      const comR = run("gh", ["api", `repos/${repo}/pulls/${pr}/comments`, "--paginate"]);
+      if (comR.code !== 0) die("gh list inline comments failed", comR.stderr);
+      const comments: Array<unknown> = JSON.parse(comR.stdout || "[]");
+      return out(classifyPosted(reviews, comments, headSha, "cc-review[bot]"));
+    }
     default:
       return die(`unknown verb: ${verb}`);
   }

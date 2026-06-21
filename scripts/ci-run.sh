@@ -29,6 +29,13 @@ CC_REVIEW_BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # both read/write the slice identically — one implementation, no drift).
 source "$CC_REVIEW_BOT_DIR/scripts/memory-slice.sh"
 export GITHUB_TOKEN="${GH_TOKEN}"
+# This pipeline runs ONLY inside an isolated CI runner (GitHub Actions: ephemeral VM, no persistent
+# state, job-scoped secrets). Assert that sandbox so Claude's `--dangerously-skip-permissions` engages
+# under the runner's ROOT uid — Claude refuses the flag under root WITHOUT a sandbox signal, which left
+# every tool command prompting "Do you want to proceed?" and stalled reviews (#75). The assertion lives
+# HERE, the CI entry point that knows it's in the runner, not inferred from uid in agentapi-claude.sh.
+# Local/GitLab paths (run-local.sh / run-gitlab.sh, non-root) never set this and don't need it.
+export IS_SANDBOX=1
 : "${CC_POST:=1}" "${PING_OVERRIDE:=false}"
 WS="${GITHUB_WORKSPACE:-$PWD}"
 cd "$WS"
