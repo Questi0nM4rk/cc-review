@@ -71,6 +71,9 @@ A successful run requires ALL THREE legs to hold — `stable` alone is not suffi
 > Use the **`--dangerously-skip-permissions` flag** so the agent's tools run without prompts — NOT
 > `--permission-mode bypassPermissions`, which is silently downgraded on the runner. Do not set
 > `permissions.defaultMode` in the settings seed (it conflicts with the flag).
+> **CI-runner sandbox prerequisite:** Claude refuses `--dangerously-skip-permissions` under root (`"cannot be used with root/sudo privileges for security reasons"` — verified against the claude 2.1.x binary). GitHub Actions runs as root. `ci-run.sh` exports `IS_SANDBOX=1` (asserting the isolated-runner sandbox) so the flag engages under root uid; the sandbox assertion lives in the CI entry point, not inferred from uid in the shared invoker.
+
+**Post-verify retry (brain Post phase).** After posting the review, the brain runs the deterministic `verify-posted` adapter verb: counts the bot's reviews + inline comments whose `commit_id` equals the reviewed head SHA (run-scoped — not fooled by a prior run's review on the same PR). If a review/approve or action items have not landed, the brain retries the post up to 3×. On exhaustion the run fails red: `gate.mjs` returns a failure reason and `ci-run.sh` posts a status comment. This closes the loop between the three-leg run-completion contract above and the actual GitHub ground truth — a post that silently bounced does not pass the gate.
 
 - Sub-agents do **not** inherit env vars, so inputs arrive via files the runner stages
   (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the
