@@ -137,13 +137,11 @@ else
   PROMPT="$(cat "$PROMPT_FILE")"
 fi
 
-# CI (GitHub Actions) runs as ROOT, and Claude REFUSES `--dangerously-skip-permissions` under root
-# ("cannot be used with root/sudo privileges for security reasons") — so bypass mode never engages and
-# EVERY tool command falls back to an interactive "Do you want to proceed?" approval, the storm that
-# stalls a headless review. An ephemeral CI runner IS the sandbox that flag is meant for: tell Claude so
-# (the binary gates the root refusal on a sandbox signal). Root-gated → a local non-root run is untouched.
-# (verified against the claude 2.1.x binary: the only strings are the root refusal + IS_SANDBOX/sandbox.)
-if [ "$(id -u 2>/dev/null)" = "0" ]; then export IS_SANDBOX=1; fi
+# NOTE on root + bypass: Claude REFUSES `--dangerously-skip-permissions` under root ("cannot be used
+# with root/sudo privileges"), so on a root CI runner bypass mode only engages if a sandbox is signalled
+# (env IS_SANDBOX). That assertion is made by the CALLER that knows it runs in an isolated runner —
+# ci-run.sh exports IS_SANDBOX=1 — NOT inferred from uid here, so a stray root invocation of this general
+# invoker outside that pipeline does not auto-bypass. (Verified against the claude 2.1.x binary.)
 
 # Start the agentapi server (it owns the interactive agent's pty) in the background.
 "${SERVER_CMD[@]}" >/tmp/agentapi-server.log 2>&1 &
@@ -212,15 +210,16 @@ elapsed=0; done=0; approvals=0
 while [ "$elapsed" -lt "$MAX" ]; do
   st="$(status)"
   msg="$(last_msg)"
-  # The outer case matches a SPECIFIC consent prompt; answer it by sending "1" (= Yes / the first option
-  # in every such Claude Code menu). With IS_SANDBOX engaging --dangerously-skip-permissions under root
-  # (above), the per-command "Do you want to proceed?" storm no longer appears, so this mainly clears the
-  # one-time "Run a dynamic workflow?" consent that nothing else suppresses. We do NOT gate on a menu-line
-  # regex — anchoring on the multibyte ❯ cursor proved brittle and stalled a real run (#75 re-test) by
-  # failing to match a later prompt. MAXAPP is a runaway backstop, not a per-review budget.
+  # The outer case matches a SPECIFIC Claude Code consent prompt; answer "1" (= Yes / first option).
+  # With ci-run.sh asserting IS_SANDBOX so --dangerously-skip-permissions engages under root, the
+  # per-command "Do you want to proceed?" storm no longer appears, so this mainly clears the one-time
+  # "Run a dynamic workflow?" consent nothing else suppresses. Structural guard: require a real
+  # numbered-menu line present — matching a NON-cursor option (e.g. "2."/"3)") so it's locale-safe and
+  # does NOT depend on the multibyte ❯ cursor (whose anchored regex was brittle and stalled a real run,
+  # #75 re-test). Blocks a stray "1" to prose that merely quotes the phrase. MAXAPP backstops a runaway.
   case "$msg" in
     *"Run a dynamic workflow?"*|*"Do you want to proceed?"*)
-      if [ "$approvals" -lt "$MAXAPP" ]; then
+      if printf '%s' "$msg" | grep -qE '^[[:space:]]*[0-9][.)]' && [ "$approvals" -lt "$MAXAPP" ]; then
         jq -n '{content:"1", type:"user"}' \
           | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
         approvals=$((approvals + 1))
