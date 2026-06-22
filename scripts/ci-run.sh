@@ -30,10 +30,13 @@ CC_REVIEW_BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$CC_REVIEW_BOT_DIR/scripts/memory-slice.sh"
 export GITHUB_TOKEN="${GH_TOKEN}"
 # This pipeline runs ONLY inside an isolated CI runner (GitHub Actions: ephemeral VM, no persistent
-# state, job-scoped secrets). Assert that sandbox so Claude's `--dangerously-skip-permissions` engages
-# under the runner's ROOT uid — Claude refuses the flag under root WITHOUT a sandbox signal, which left
-# every tool command prompting "Do you want to proceed?" and stalled reviews (#75). The assertion lives
-# HERE, the CI entry point that knows it's in the runner, not inferred from uid in agentapi-claude.sh.
+# state, job-scoped secrets). We drive claude with `--permission-mode auto` (NOT
+# `--dangerously-skip-permissions`): on a real install the bypass flag refuses under the runner's root
+# uid AND, even past that, hits a "Bypass Permissions mode … Yes, I accept" consent dialog whose option
+# 1 is "No, exit"; bypass is also disable-able by org/managed settings. Auto mode is governed by a
+# separate gate and boots straight to ready (verified in a fresh-root container on claude 2.1.185) (#75).
+# IS_SANDBOX is kept as a truthful assertion that this is an isolated runner (harmless; future-proofs any
+# sandbox-gated behaviour). The assertion lives HERE, the CI entry point that knows it's in the runner.
 # Local/GitLab paths (run-local.sh / run-gitlab.sh, non-root) never set this and don't need it.
 export IS_SANDBOX=1
 : "${CC_POST:=1}" "${PING_OVERRIDE:=false}"
@@ -104,7 +107,7 @@ if [ "$BACKFILL_NEEDED" = "1" ]; then
     # stable) is surfaced as a warning, not a failure — a cold review is the safe fallback (cf. #51).
     "$CC_REVIEW_BOT_DIR/scripts/agentapi-claude.sh" --prompt-file /tmp/run/bf-prompt.txt --out /tmp/run/backfill-transcript.txt \
       --claude-arg --model --claude-arg claude-sonnet-4-6 \
-      --claude-arg --dangerously-skip-permissions \
+      --claude-arg --permission-mode --claude-arg auto \
       --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
       --claude-arg --add-dir --claude-arg /tmp \
       || echo "::warning::cc-review backfill did not complete cleanly (possible usage/quota limit); proceeding to review without primed memory"
@@ -139,9 +142,9 @@ bot_count() { # $1 = api path under repos/$REPO
 BEFORE_REVIEWS=$(bot_count "pulls/${PR_NUMBER}/reviews?per_page=100")
 BEFORE_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
 
-# --add-dir is REQUIRED and is a SEPARATE gate from --allowedTools and --dangerously-skip-permissions.
-# claude confines file access to cwd (the consumer checkout) + each --add-dir; the allowlist/skip-perms
-# only govern WHICH tools run and approval, NOT which paths they may touch. Without it the agent can't
+# --add-dir is REQUIRED and is a SEPARATE gate from the permission mode (--permission-mode auto).
+# claude confines file access to cwd (the consumer checkout) + each --add-dir; the permission mode only
+# governs tool approval, NOT which paths they may touch. Without it the agent can't
 # read the bot clone ($CC_REVIEW_BOT_DIR) or the /tmp-staged inputs (cc-input.json, pr-diff.txt) — it
 # then non-deterministically refuses ("won't run a script I can't read"), giving flaky red checks (#49).
 # Drive the brain through an INTERACTIVE claude session via coder/agentapi (5-hour bucket) — NOT
@@ -154,7 +157,7 @@ printf '%s' "$PROMPT" > /tmp/run/prompt.txt
 "$CC_REVIEW_BOT_DIR/scripts/agentapi-claude.sh" --prompt-file /tmp/run/prompt.txt --out /tmp/run/transcript.txt \
   --done-marker '<<<CC_REVIEW_COMPLETE>>>' \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
-  --claude-arg --dangerously-skip-permissions \
+  --claude-arg --permission-mode --claude-arg auto \
   --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" \
   --claude-arg --add-dir --claude-arg /tmp
 RUN_RC=$?

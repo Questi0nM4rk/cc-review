@@ -83,7 +83,7 @@ jobs:
           # Interactive via agentapi (5h bucket), not `claude -p`. Best-effort; a non-zero exit just means no consolidation this run.
           bot/scripts/agentapi-claude.sh --prompt-file /tmp/consolidate-prompt.txt --out /tmp/consolidate-transcript.txt \
             --claude-arg --model --claude-arg claude-sonnet-4-6 \
-            --claude-arg --dangerously-skip-permissions \
+            --claude-arg --permission-mode --claude-arg auto \
             --claude-arg --add-dir --claude-arg "$PWD/mem" \
             || echo "::warning::cross-repo consolidation did not complete cleanly this run"
 

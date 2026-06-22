@@ -37,7 +37,7 @@ command, not the Agent SDK), driven through an **INTERACTIVE `claude` session vi
 printf '%s' "$PROMPT" > "$RUN_DIR/prompt.txt"
 scripts/agentapi-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/transcript.txt" \
   --claude-arg --model --claude-arg claude-sonnet-4-6 \
-  --claude-arg --dangerously-skip-permissions \
+  --claude-arg --permission-mode --claude-arg auto \
   --claude-arg --add-dir --claude-arg "$CC_REVIEW_BOT_DIR" --claude-arg --add-dir --claude-arg /tmp
 ```
 
@@ -65,13 +65,27 @@ A successful run requires ALL THREE legs to hold — `stable` alone is not suffi
 > **Fresh-runner boot (RESOLVED — CI is live):** `CLAUDE_CODE_OAUTH_TOKEN` (an `sk-ant-oat01` subscription
 > token) **does** authenticate interactive `claude` on a CI runner. The real fresh-runner work was clearing
 > the first-run TUI gates a logged-in dev machine has pre-cleared: the invoker seeds onboarding+trust state
-> (`ci-claude.json`) and behaviour settings (`ci-claude-settings.json`), and **auto-answers the one
-> "Run a dynamic workflow?" consent** (`POST "1"`) — no setting suppresses that gate in interactive mode.
+> (`ci-claude.json`) and behaviour settings (`ci-claude-settings.json`), and **auto-answers ONLY the one
+> "Run a dynamic workflow?" consent** (option 1 = Yes) via the pure, unit-tested `auto_answer_for`
+> (`scripts/agentapi-autoanswer.sh`) — no setting suppresses that gate in interactive mode. The auto-answer
+> is workflow-consent ONLY; it never touches the bypass-acceptance dialog (whose option 1 is "No, exit"),
+> and other prompts are left to stall to the safe done-marker timeout.
 >
-> Use the **`--dangerously-skip-permissions` flag** so the agent's tools run without prompts — NOT
-> `--permission-mode bypassPermissions`, which is silently downgraded on the runner. Do not set
-> `permissions.defaultMode` in the settings seed (it conflicts with the flag).
-> **CI-runner sandbox prerequisite:** Claude refuses `--dangerously-skip-permissions` under root (`"cannot be used with root/sudo privileges for security reasons"` — verified against the claude 2.1.x binary). GitHub Actions runs as root. `ci-run.sh` exports `IS_SANDBOX=1` (asserting the isolated-runner sandbox) so the flag engages under root uid; the sandbox assertion lives in the CI entry point, not inferred from uid in the shared invoker.
+> Use the **`--permission-mode auto` flag** (passed as `--claude-arg --permission-mode --claude-arg auto`)
+> so the agent's tools run without per-command prompts. We **dropped `--dangerously-skip-permissions`**
+> (#75): on a real CI install (claude installed via `claude.ai/install.sh` → 2.1.185) it hits a
+> **Bypass-Permissions ACCEPTANCE dialog** EVEN THOUGH `ci-claude.json` seeds `bypassPermissionsModeAccepted: true`
+> (that seed key is stale/ineffective in 2.1.185), bypass is org/managed-settings disable-able, and it
+> refuses under root. Auto mode is governed by a **separate gate** (`disableAutoMode`/provider/model, not
+> `disableBypassPermissionsMode`), so it sidesteps all of that and boots straight to ready (verified
+> head-to-head in a fresh-root container, claude 2.1.185). `--permission-mode bypassPermissions` likewise
+> never engaged (#68 wrong → #69 reverted). The permission mode is set via the CLI flag, not settings, so do
+> not set `permissions.defaultMode` in the settings seed.
+> **Isolated-runner assertion (retained, no longer load-bearing):** `ci-run.sh` still exports `IS_SANDBOX=1`
+> as a truthful "this is an isolated runner" claim (harmless; future-proofs any sandbox-gated behaviour). It
+> is **no longer needed** for a root-refusal — auto mode does not trigger the root guard that
+> `--dangerously-skip-permissions` did. The assertion lives in the CI entry point, not inferred from uid in
+> the shared invoker.
 
 **Post-verify retry (brain Post phase).** After posting the review, the brain runs the deterministic `verify-posted` adapter verb: counts the bot's reviews + inline comments whose `commit_id` equals the reviewed head SHA (run-scoped — not fooled by a prior run's review on the same PR). If a review/approve or action items have not landed, the brain retries the post up to 3×. On exhaustion the run fails red: `gate.mjs` returns a failure reason and `ci-run.sh` posts a status comment. This closes the loop between the three-leg run-completion contract above and the actual GitHub ground truth — a post that silently bounced does not pass the gate.
 
@@ -79,7 +93,7 @@ A successful run requires ALL THREE legs to hold — `stable` alone is not suffi
   (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the
   workspace** (`.cc-memory/`, `.cc-run/`; the read-only `.cc-global/` is staged there too) with `cat`
   heredocs into **pre-created** dirs — a convention proven in the old headless/allowlist era and
-  **retained across the interactive/agentapi switch** (harmless and robust; interactive + `--dangerously-skip-permissions`
+  **retained across the interactive/agentapi switch** (harmless and robust; interactive + `--permission-mode auto`
   no longer passes a Bash allowlist). See `docs/lessons-learned.md`.
 
 ---

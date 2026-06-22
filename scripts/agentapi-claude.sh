@@ -43,6 +43,13 @@ done
 command -v curl >/dev/null 2>&1 || { echo "agentapi-claude: curl is required" >&2; exit 2; }
 command -v jq   >/dev/null 2>&1 || { echo "agentapi-claude: jq is required" >&2; exit 2; }
 
+# Pure interactive-consent decision (which digit, if any, to auto-send), sourced so it is unit-tested
+# in isolation (scripts/agentapi-autoanswer.test.sh). Defined for BOTH selftest and real runs so the
+# completion loop below can call it unconditionally.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/agentapi-autoanswer.sh
+. "$SCRIPT_DIR/agentapi-autoanswer.sh"
+
 # agentapi is a single static binary — install it to ~/.local/bin if missing.
 if ! command -v agentapi >/dev/null 2>&1; then
   echo "agentapi-claude: installing agentapi (coder/agentapi)…" >&2
@@ -62,7 +69,6 @@ fi
 # untouched. The seed is MERGED over any stub so installer-written keys survive. Auth is NOT seeded
 # here: it rides on CLAUDE_CODE_OAUTH_TOKEN (a secret), never a committed credential.
 if [ "$SELFTEST" != "1" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   SEED_FILE="$SCRIPT_DIR/ci-claude.json"
   CFG="$HOME/.claude.json"
   if [ -f "$SEED_FILE" ] && ! jq -e '.hasCompletedOnboarding == true' "$CFG" >/dev/null 2>&1; then
@@ -89,11 +95,13 @@ if [ "$SELFTEST" != "1" ]; then
     fi
 
     # SETTINGS seed (separate file, separate concern): ~/.claude/settings.json governs permission-prompt
-    # BEHAVIOUR. The `--dangerously-skip-permissions` flag the entry scripts pass silences per-tool prompts;
-    # these skip flags (skipAutoPermissionPrompt / skipWorkflowUsageWarning) quiet the remaining startup
-    # noise. (It deliberately does NOT set permissions.defaultMode — that conflicts with the flag.) The one
-    # gate nothing here can suppress is the "Run a dynamic workflow?" consent — the poll loop below answers
-    # it. Merge our flags into any existing settings (stub-safe), same fresh-runner gate.
+    # BEHAVIOUR. Per-tool prompts are silenced by the permission mode the entry scripts pass on the CLI:
+    # the CI script (ci-run.sh) passes `--permission-mode auto`; the local scripts (run-local.sh /
+    # run-gitlab.sh, on an already-onboarded non-root dev box) still pass `--dangerously-skip-permissions`.
+    # These skip flags (skipAutoPermissionPrompt / skipWorkflowUsageWarning) quiet the remaining startup
+    # noise. (It deliberately does NOT set permissions.defaultMode — the mode is set via the CLI flag.) The
+    # one gate nothing here suppresses is the "Run a dynamic workflow?" consent — the poll loop below
+    # auto-answers ONLY that. Merge our flags into any existing settings (stub-safe), same fresh-runner gate.
     SETTINGS_SEED="$SCRIPT_DIR/ci-claude-settings.json"
     if [ -f "$SETTINGS_SEED" ]; then
       mkdir -p "$HOME/.claude"
@@ -137,11 +145,12 @@ else
   PROMPT="$(cat "$PROMPT_FILE")"
 fi
 
-# NOTE on root + bypass: Claude REFUSES `--dangerously-skip-permissions` under root ("cannot be used
-# with root/sudo privileges"), so on a root CI runner bypass mode only engages if a sandbox is signalled
-# (env IS_SANDBOX). That assertion is made by the CALLER that knows it runs in an isolated runner —
-# ci-run.sh exports IS_SANDBOX=1 — NOT inferred from uid here, so a stray root invocation of this general
-# invoker outside that pipeline does not auto-bypass. (Verified against the claude 2.1.x binary.)
+# NOTE on root + bypass (applies to the LOCAL entry scripts that still pass `--dangerously-skip-permissions`;
+# the CI scripts use `--permission-mode auto` instead — see #75): Claude REFUSES the bypass flag under root
+# ("cannot be used with root/sudo privileges") and, even past that on a real install, gates it behind a
+# "Yes, I accept" dialog and any org/managed disable — which is why the CI path moved to auto mode. The
+# shared invoker still honours IS_SANDBOX (asserted by the caller, NOT inferred from uid here, so a stray
+# root invocation does not auto-bypass). (Verified against the claude 2.1.x binary.)
 
 # Start the agentapi server (it owns the interactive agent's pty) in the background.
 "${SERVER_CMD[@]}" >/tmp/agentapi-server.log 2>&1 &
@@ -192,12 +201,11 @@ jq -n --arg c "$PROMPT" '{content:$c, type:"user"}' \
   | curl -s --max-time 30 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
 
 # 3) Wait for the turn to complete: after the POST the agent goes "running"; poll until "stable".
-# An interactive `claude` driven headlessly still hits the prompts a human would answer — chiefly the
-# one-time "Run a dynamic workflow?" consent, which `--dangerously-skip-permissions` does NOT suppress
-# (verified: on CI, tool calls run silently under the flag but the workflow-launch consent still blocks).
-# When a numbered selection menu is pending, auto-approve it by sending "1" — option 1 is the "Yes" /
-# "Yes, run it" choice in every such Claude Code prompt. This is just answering a known interactive gate
-# (what a human would press); correctness is still verified against GitHub ground truth, never this log.
+# Under `--permission-mode auto` (what ci-run.sh passes) tool calls run without the per-command
+# "Do you want to proceed?" prompt; the one consent that can still surface is the Workflow-tool launch
+# ("Run a dynamic workflow?"). auto_answer_for() (sourced above, unit-tested) decides which digit, if
+# any, is safe to auto-send — ONLY that consent, never the Bypass-Permissions acceptance dialog (whose
+# option 1 is "No, exit"). Correctness is still verified against GitHub ground truth, never this log.
 last_msg() { curl -s --max-time 8 "${BASE}/messages" 2>/dev/null | jq -r '(.messages // [])[-1].content // ""' 2>/dev/null; }
 # True iff the marker appears in an AGENT-role message. The orchestrator prints it only AFTER the
 # workflow returned + the sentinel was written, so an agent-role match means "really finished", not
@@ -210,24 +218,19 @@ elapsed=0; done=0; approvals=0
 while [ "$elapsed" -lt "$MAX" ]; do
   st="$(status)"
   msg="$(last_msg)"
-  # The outer case matches a SPECIFIC Claude Code consent prompt; answer "1" (= Yes / first option).
-  # With ci-run.sh asserting IS_SANDBOX so --dangerously-skip-permissions engages under root, the
-  # per-command "Do you want to proceed?" storm no longer appears, so this mainly clears the one-time
-  # "Run a dynamic workflow?" consent nothing else suppresses. Structural guard: require a real
-  # numbered-menu line present — matching a NON-cursor option (e.g. "2."/"3)") so it's locale-safe and
-  # does NOT depend on the multibyte ❯ cursor (whose anchored regex was brittle and stalled a real run,
-  # #75 re-test). Blocks a stray "1" to prose that merely quotes the phrase. MAXAPP backstops a runaway.
-  case "$msg" in
-    *"Run a dynamic workflow?"*|*"Do you want to proceed?"*)
-      if printf '%s' "$msg" | grep -qE '^[[:space:]]*[0-9][.)]' && [ "$approvals" -lt "$MAXAPP" ]; then
-        jq -n '{content:"1", type:"user"}' \
-          | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
-        approvals=$((approvals + 1))
-        echo "agentapi-claude: auto-approved an interactive prompt (#${approvals}/${MAXAPP})" >&2
-        sleep "$POLL"; elapsed=$((elapsed + POLL)); continue
-      fi
-      ;;
-  esac
+  # auto_answer_for() returns the digit to auto-send for a recognized consent prompt, or nothing.
+  # Only the "Run a dynamic workflow?" consent qualifies (option 1 = Yes); a generic proceed prompt or
+  # the bypass-acceptance dialog (option 1 = "No, exit") return nothing — we then let the run stall to
+  # the done-marker timeout (a safe red failure) rather than send a blind keystroke that could exit the
+  # session or approve a risky op. MAXAPP backstops a runaway.
+  ans="$(auto_answer_for "$msg")"
+  if [ -n "$ans" ] && [ "$approvals" -lt "$MAXAPP" ]; then
+    jq -n --arg c "$ans" '{content:$c, type:"user"}' \
+      | curl -s --max-time 15 -X POST "${BASE}/message" -H 'Content-Type: application/json' -d @- >/dev/null
+    approvals=$((approvals + 1))
+    echo "agentapi-claude: auto-answered the workflow consent with '${ans}' (#${approvals}/${MAXAPP})" >&2
+    sleep "$POLL"; elapsed=$((elapsed + POLL)); continue
+  fi
   # COMPLETION: 'stable' counts as done ONLY when a done-marker was requested AND it has appeared.
   # With no marker (backfill/selftest/local), fall back to bare 'stable' (legacy behaviour).
   if [ "$st" = "stable" ]; then

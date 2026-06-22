@@ -41,3 +41,6 @@ jobs:
 
       - name: Fetch identity-gate contract test
         run: node scripts/verify-gate.test.mjs
+
+      - name: Invoker auto-answer decision test (bash)
+        run: bash scripts/agentapi-autoanswer.test.sh
