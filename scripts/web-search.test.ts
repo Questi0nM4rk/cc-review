@@ -78,12 +78,15 @@ describe("fetchResults", () => {
   });
   test("engine warnings go to warnings[] NOT stdout — CRITICAL", async () => {
     const spy = mock.method(process.stdout, "write", () => true);
-    globalThis.fetch = mockFetch(makeSearxngBody([makeResult()], [["google", "suspended"]]));
-    const { warnings } = await fetchResults("https://x.com", makeOpts());
-    assert.equal(warnings.length, 1);
-    assert.ok(warnings[0].includes("google"));
-    assert.equal(spy.mock.callCount(), 0);
-    spy.mock.restore();
+    try {
+      globalThis.fetch = mockFetch(makeSearxngBody([makeResult()], [["google", "suspended"]]));
+      const { warnings } = await fetchResults("https://x.com", makeOpts());
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0].includes("google"));
+      assert.equal(spy.mock.callCount(), 0);
+    } finally {
+      spy.mock.restore();
+    }
   });
   test("empty results returns empty array", async () => {
     globalThis.fetch = mockFetch(makeSearxngBody([]));
@@ -124,6 +127,9 @@ describe("formatters", () => {
     const lines = formatCsv([]).trim().split("\n");
     assert.equal(lines.length, 1);
     assert.ok(lines[0].includes("url"));
+  });
+  test("formatText empty -> fallback message", () => {
+    assert.ok(formatText([]).includes("no results"));
   });
 });
 

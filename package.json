@@ -2,6 +2,7 @@
   "name": "cc-review",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Strict, zero-tolerance PR/MR review bot powered by Claude Code.",
   "license": "UNLICENSED",
   "scripts": {

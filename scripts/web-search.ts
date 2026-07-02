@@ -28,7 +28,7 @@ const VERSION = "1.0.0";
 function usage(): void {
   process.stderr.write(`qsm-searxng v${VERSION}
 
-Bun-native SearXNG meta-search CLI. stdout = JSON only. stderr = warnings.
+SearXNG meta-search CLI. stdout = JSON only. stderr = warnings.
 
 Usage:
   qsm-searxng <query>                      search (default JSON output)

@@ -197,11 +197,11 @@ significant re-run then re-posts the overview.
 
 Run in parallel after the overview is posted; their observations feed the squad and `pickSquad`.
 
-1. **Web research — AI-code mistakes** (sonnet, `scripts/web-search.ts` + `WebFetch`). Researches
+1. **Web research — AI-code mistakes** (sonnet, `scripts/web-search.ts` (searxng) + `WebSearch`/`WebFetch`). Researches
    the diff's libraries/APIs/patterns against the web for AI-generated-code failure modes
    (over-generic names, swallowed exceptions, happy-path-only tests, hallucinated APIs, etc.).
    Returns observations `{pattern, location, note, suggested_domain}` — **not findings**.
-2. **Web research — general mistakes** (sonnet, `scripts/web-search.ts` + `WebFetch`). Researches
+2. **Web research — general mistakes** (sonnet, `scripts/web-search.ts` (searxng) + `WebSearch`/`WebFetch`). Researches
    against the web for the concerns an experienced human reviewer raises (missing tests/migrations,
    unproven behavior-preservation, stale references, contract drift). Returns observations.
 3. **Memories & docs lookup** — reads this repo's memory slice + the repo's `./docs` to inform
