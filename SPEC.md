@@ -56,11 +56,25 @@ scripts/agentapi-claude.sh --prompt-file "$RUN_DIR/prompt.txt" --out "$RUN_DIR/t
 
 A successful run requires ALL THREE legs to hold — `stable` alone is not sufficient:
 
-1. **agentapi `stable` gated on the done-marker.** `ci-run.sh` passes `--done-marker '<<<CC_REVIEW_COMPLETE>>>'` to the invoker. `stable` is treated as done ONLY after that marker has appeared in the conversation. A run that went idle at an unmatched interactive prompt (e.g. a Web-Search approval gate) reaches `stable` without the marker — the invoker keeps polling rather than declaring completion. Callers without `--done-marker` (backfill, selftest, local) keep the bare-`stable` behaviour.
+1. **agentapi `stable` gated on the done-marker.** `ci-run.sh` passes `--done-marker '<<<CC_REVIEW_COMPLETE>>>'` to the invoker.
+   `stable` is treated as done ONLY after that marker has appeared in the conversation.
+   A run that went idle at an unmatched interactive prompt (e.g. a Web-Search approval gate) reaches `stable` without the
+   marker — the invoker keeps polling rather than declaring completion. Callers without `--done-marker` (backfill, selftest,
+   local) keep the bare-`stable` behaviour.
 
-2. **Completion sentinel written by the orchestrator.** The review prompt instructs the orchestrator, after the Workflow returns, to write the brain's return JSON verbatim to `.cc-run/cc-result.json` using a `cat` heredoc, then print `<<<CC_REVIEW_COMPLETE>>>` as its final output. The sentinel is the proof that the Workflow actually returned; its absence (or `ok: false`) means the run finished in an error state.
+2. **Completion sentinel written by the orchestrator.** The review prompt instructs the orchestrator, after the Workflow returns,
+   to write the brain's return JSON verbatim to `.cc-run/cc-result.json` using a `cat` heredoc, then print
+   `<<<CC_REVIEW_COMPLETE>>>` as its final output. The sentinel is the proof that the Workflow actually returned;
+   its absence (or `ok: false`) means the run finished in an error state.
 
-3. **Mode-aware GitHub ground-truth cross-check (`scripts/gate.mjs`).** `ci-run.sh` delegates the pass/fail verdict to this pure, env-driven module after each run. It reads the sentinel and the before/after GitHub artifact counts, then decides per mode: a normal review (`first`/`rerun`) must raise the **formal review count** (a `POST /pulls/N/reviews` — an overview comment alone does not count), OR be a recognized idempotent duplicate (the brain re-posted a byte-identical review the adapter skipped, surfaced as `idempotent: true` in the sentinel); `answer`/`rerun-blocked` accept comment growth instead; a missing or `ok: false` sentinel fails the run even when agentapi reported `stable`; an unknown mode passes through (forward-compatible). The root cause of #75 was the old OR-gate: because the overview comment is posted before the verdict, comment count always rose on a stalled run, so the gate accepted it with no formal review posted.
+3. **Mode-aware GitHub ground-truth cross-check (`scripts/gate.mjs`).** `ci-run.sh` delegates the pass/fail verdict to this
+   pure, env-driven module after each run. It reads the sentinel and the before/after GitHub artifact counts, then decides
+   per mode: a normal review (`first`/`rerun`) must raise the **formal review count** (a `POST /pulls/N/reviews` — an
+   overview comment alone does not count), OR be a recognized idempotent duplicate (the brain re-posted a byte-identical
+   review the adapter skipped, surfaced as `idempotent: true` in the sentinel); `answer`/`rerun-blocked` accept comment
+   growth instead; a missing or `ok: false` sentinel fails the run even when agentapi reported `stable`; an unknown mode
+   passes through (forward-compatible). The root cause of #75 was the old OR-gate: because the overview comment is posted
+   before the verdict, comment count always rose on a stalled run, so the gate accepted it with no formal review posted.
 >
 > **Fresh-runner boot (RESOLVED — CI is live):** `CLAUDE_CODE_OAUTH_TOKEN` (an `sk-ant-oat01` subscription
 > token) **does** authenticate interactive `claude` on a CI runner. The real fresh-runner work was clearing
@@ -87,7 +101,12 @@ A successful run requires ALL THREE legs to hold — `stable` alone is not suffi
 > `--dangerously-skip-permissions` did. The assertion lives in the CI entry point, not inferred from uid in
 > the shared invoker.
 
-**Post-verify retry (brain Post phase).** After posting the review, the brain runs the deterministic `verify-posted` adapter verb: counts the bot's reviews + inline comments whose `commit_id` equals the reviewed head SHA (run-scoped — not fooled by a prior run's review on the same PR). If a review/approve or action items have not landed, the brain retries the post up to 3×. On exhaustion the run fails red: `gate.mjs` returns a failure reason and `ci-run.sh` posts a status comment. This closes the loop between the three-leg run-completion contract above and the actual GitHub ground truth — a post that silently bounced does not pass the gate.
+**Post-verify retry (brain Post phase).** After posting the review, the brain runs the deterministic `verify-posted` adapter
+verb: counts the bot's reviews + inline comments whose `commit_id` equals the reviewed head SHA (run-scoped — not fooled by
+a prior run's review on the same PR). If a review/approve or action items have not landed, the brain retries the post up to
+3×. On exhaustion the run fails red: `gate.mjs` returns a failure reason and `ci-run.sh` posts a status comment. This closes
+the loop between the three-leg run-completion contract above and the actual GitHub ground truth — a post that silently
+bounced does not pass the gate.
 
 - Sub-agents do **not** inherit env vars, so inputs arrive via files the runner stages
   (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the
@@ -149,7 +168,7 @@ significant re-run then re-posts the overview.
 | 5 | **Dedup + check** — JS dedup by `file:line`, then **one** agent filters false positives ("review if true") | JS + opus · high | findings>0, difficulty ≥ 2 | confirmed findings |
 | 6 | **Decide** — `APPROVE` iff **0 findings AND 0 unresolved threads**, else `REQUEST_CHANGES` | JS | always | verdict |
 | 7 | **Post** — review + inline findings + verdict via adapter; then stamp the per-PR **review-state marker** (head sha + file count, §7) | sonnet | `post===true` | posted |
-| 8 | **Memory** — learnings to the memory branch (§7) | sonnet | something to record |
+| 8 | **Memory** — learnings to the memory branch (§7) | sonnet | something to record | memory updated |
 
 ### 5.B Re-run (marker present)
 
@@ -164,8 +183,8 @@ significant re-run then re-posts the overview.
    **re-reviews on every re-run** regardless; the check gates only the *expensive extras*:
    - **Not significant** → leave the overview comment untouched and **skip web research** (the squad
      reviews research-less) → dedup+check → decide → post.
-   - **Significant** → **redraw the overview IN PLACE** (edit the existing comment, never re-post)
-     + **run gather** (fresh web research) → squad → dedup+check → decide → post.
+   - **Significant** → **redraw the overview IN PLACE** (edit the existing comment, never re-post);
+     run gather (fresh web research) → squad → dedup+check → decide → post.
 
 ### Difficulty → PATH (deterministic JS table)
 
