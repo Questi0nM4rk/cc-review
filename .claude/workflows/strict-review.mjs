@@ -42,6 +42,7 @@ const ARGS = (() => {
 const BOT = (typeof ARGS.bot_dir === "string" && ARGS.bot_dir.trim()) ? ARGS.bot_dir.trim() : ".";
 const ADAPTER = `${BOT}/scripts/review-platform.ts`;
 const TOOLS = `${BOT}/scripts/analysis-tools.ts`;
+const WEBSEARCH = `${BOT}/scripts/web-search.ts`;
 const LANG_REFS = `${BOT}/lang-refs`;
 
 // Agents are filesystem-sandboxed to the workspace and cannot write /tmp or mkdir. They
@@ -265,7 +266,10 @@ const WEB_KINDS = {
 };
 const webResearchPrompt = (kind, diff, category) => {
   const k = WEB_KINDS[kind];
-  return `${STRICT}\n\nYou are a WEB-BACKED research agent for ${k.focus}. USE WebSearch/WebFetch to check the diff's libraries/APIs/frameworks against current docs, best-practices, known issues and advisories — then report OBSERVATIONS (leads for the reviewers), NOT findings.\nScan for: ${k.scan}\n\nCategory: ${category}\n\nEach observation: pattern, location {file,line}, note (imperative), suggested_domain (security|architecture|testing|performance|data-access|api), and source_url when a web source backs it. Empty array if none. source='${kind}'.\n\nDIFF:\n${untrustedBlock("PR diff", diff)}`;
+  return `${STRICT}\n\nYou are a WEB-BACKED research agent for ${k.focus}. Check the diff's libraries/APIs/frameworks against current docs, best-practices, known issues and advisories, then report OBSERVATIONS (leads for the reviewers), NOT findings.\n` +
+    `SEARCH with the meta-search tool (self-hosted searxng, clean JSON on stdout) from the repo root:\n  tsx ${WEBSEARCH} "<query>" -n 15 2>/dev/null\n` +
+    `Run it for each concrete lead (library+version, API, advisory). Parse the JSON array [{url,title,content,...}] and WebFetch the most promising URLs to confirm. If the tool errors OR returns an empty array (no instance reachable), FALL BACK to the WebSearch/WebFetch tools for that query — never skip the research.\n` +
+    `Scan for: ${k.scan}\n\nCategory: ${category}\n\nEach observation: pattern, location {file,line}, note (imperative), suggested_domain (security|architecture|testing|performance|data-access|api), and source_url when a web source backs it. Empty array if none. source='${kind}'.\n\nDIFF:\n${untrustedBlock("PR diff", diff)}`;
 };
 
 const memDocsPrompt = (prNumber) =>
