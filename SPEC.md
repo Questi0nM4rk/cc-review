@@ -197,12 +197,12 @@ significant re-run then re-posts the overview.
 
 Run in parallel after the overview is posted; their observations feed the squad and `pickSquad`.
 
-1. **Web research — AI-code mistakes** (sonnet, `WebSearch`/`WebFetch`). Researches the diff's
-   libraries/APIs/patterns against the web for AI-generated-code failure modes (over-generic
-   names, swallowed exceptions, happy-path-only tests, hallucinated APIs, etc.). Returns
-   observations `{pattern, location, note, suggested_domain}` — **not findings**.
-2. **Web research — general mistakes** (sonnet, `WebSearch`/`WebFetch`). Researches against the
-   web for the concerns an experienced human reviewer raises (missing tests/migrations,
+1. **Web research — AI-code mistakes** (sonnet, `scripts/web-search.ts` + `WebFetch`). Researches
+   the diff's libraries/APIs/patterns against the web for AI-generated-code failure modes
+   (over-generic names, swallowed exceptions, happy-path-only tests, hallucinated APIs, etc.).
+   Returns observations `{pattern, location, note, suggested_domain}` — **not findings**.
+2. **Web research — general mistakes** (sonnet, `scripts/web-search.ts` + `WebFetch`). Researches
+   against the web for the concerns an experienced human reviewer raises (missing tests/migrations,
    unproven behavior-preservation, stale references, contract drift). Returns observations.
 3. **Memories & docs lookup** — reads this repo's memory slice + the repo's `./docs` to inform
    the squad.
@@ -213,7 +213,11 @@ Run in parallel after the overview is posted; their observations feed the squad 
    that the brain turns into scrutiny-raising routed observations — the recall lever.
 
 The two web researchers replace the old offline recon scanners; they are the same two roles
-(ai-slop / general) but **web-backed**.
+(ai-slop / general) but **web-backed**. Each agent searches via `scripts/web-search.ts` — a
+vendored searxng meta-search client (default instance: salonek public searxng, overridable via
+`--instance` / `QSM_SEARXNG_INSTANCE` / `~/.config/qsm-searxng/config.json`). **Local-first:**
+no CI searxng service is required; when no instance is reachable the agents fall back to the
+built-in `WebSearch`/`WebFetch` tools automatically, so the CI path is unaffected.
 
 ---
 
@@ -439,7 +443,7 @@ off `FETCH_HEAD`.
 
 ## 14. Delta vs the currently-shipped pipeline (build list)
 
-1. **Web-backed gatherers** — recon scanners become two `WebSearch`/`WebFetch` agents (ai-slop / general).
+1. **Web-backed gatherers** — recon scanners become two web-search agents (ai-slop / general) driven by `scripts/web-search.ts` (vendored searxng client, salonek default, `WebSearch`/`WebFetch` fallback when no instance is reachable).
 2. **Single dedup+check agent** — replace the separate `grade` (opus) and `verify` (sonnet skeptics) phases with JS dedup + one false-positive-filter agent.
 3. **Per-PR review-state marker** — a tiny `pr-<N>/review-state.json` stamp (`reviewed_head_sha`, `reviewed_file_count`) for the significant-change check. (A broader "research cache" was considered but cut — its observations were written and never read back.)
 4. **Overview edit-in-place + marker-based first-vs-re-run detection.**
