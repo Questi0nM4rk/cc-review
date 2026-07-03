@@ -30,6 +30,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { classifyPosted } from "./posted.mjs";
+import { isBotThread } from "./threads.mjs";
 
 // Hidden marker on the bot's overview comment. It doubles as the per-PR "already reviewed"
 // state flag (SPEC §4): get-overview matches it, and the brain embeds it in the overview body.
@@ -155,7 +156,7 @@ const gh = {
     };
   },
 
-  threads(repo: string, pr: string): NormThread[] {
+  threads(repo: string, pr: string, botLogin: string): NormThread[] {
     const [owner, name] = repo.split("/");
     const q = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:50){pageInfo{hasNextPage} nodes{databaseId author{login} body path line}}}}}}}`;
     const r = run("gh", ["api", "graphql", "-f", `query=${q}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `pr=${pr}`]);
@@ -163,26 +164,34 @@ const gh = {
     const nodes = JSON.parse(r.stdout)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
     return nodes
       .filter((t: any) => !t.isResolved)
+      // Keep only bot-owned threads: the brain resolves/replies to every returned thread, so
+      // returning a human reviewer's thread would let it close a conversation it doesn't own.
+      .filter((t: any) => {
+        const first = t.comments?.nodes?.[0] ?? {};
+        return isBotThread(first.author?.login, first.body, botLogin);
+      })
       .map((t: any): NormThread => {
         const cs = t.comments?.nodes ?? [];
         const first = cs[0] ?? {};
         const last = cs.length ? cs[cs.length - 1] : first;
         const replies = cs.slice(1);
         const lastReply = replies.length ? replies[replies.length - 1] : null;
-        // The bot opened the thread, so its login == first.author. "Bot spoke last" means
-        // no new human comment since the bot's last word -> nothing to re-reply to. If the
-        // comment list was truncated (>50), we can't see the true newest comment, so fail
-        // SAFE: treat it as "not bot-last" so the reply is allowed (a redundant note beats
-        // silencing the bot on a thread a human may have just commented on).
+        // "Bot spoke last" means no new human comment since the bot's last word -> nothing to
+        // re-reply to. Compared against the THREAD OPENER's login (not the botLogin parameter —
+        // they diverge on marker-owned threads whose account label drifted, and the opener is the
+        // identity whose "last word" matters). If the comment list was truncated (>50), we can't
+        // see the true newest comment, so fail SAFE: treat it as "not bot-last" so the reply is
+        // allowed (a redundant note beats silencing the bot on a thread a human may have just
+        // commented on).
         const truncated = t.comments?.pageInfo?.hasNextPage === true;
-        const botLogin = first.author?.login;
+        const threadOwnerLogin = first.author?.login;
         return {
           id: t.id,
           path: first.path ?? "", line: first.line ?? 0,
           original_body: first.body ?? "",
           author_replied: replies.length > 0,
           latest_reply: lastReply?.body ?? "",
-          bot_replied_last: !truncated && !!botLogin && last.author?.login === botLogin,
+          bot_replied_last: !truncated && !!threadOwnerLogin && last.author?.login === threadOwnerLogin,
           comment_db_id: first.databaseId,
         };
       });
@@ -299,13 +308,19 @@ const gl = {
     };
   },
 
-  threads(repo: string, iid: string): NormThread[] {
+  threads(repo: string, iid: string, botLogin: string): NormThread[] {
     const r = run("glab", ["api", "--paginate", `projects/${glProject(repo)}/merge_requests/${iid}/discussions`]);
     if (r.code !== 0) die("glab discussions fetch failed", r.stderr);
     const discussions = JSON.parse(r.stdout) ?? [];
     return discussions
       .filter((d: any) => Array.isArray(d.notes) && d.notes.some((n: any) => n.resolvable))
       .filter((d: any) => !d.notes.every((n: any) => n.resolved))
+      // Keep only bot-owned threads: the brain resolves/replies to every returned thread, so
+      // returning a human reviewer's thread would let it close a conversation it doesn't own.
+      .filter((d: any) => {
+        const first = d.notes?.[0] ?? {};
+        return isBotThread(first.author?.username, first.body, botLogin);
+      })
       .map((d: any): NormThread => {
         const notes = d.notes ?? [];
         const first = notes[0] ?? {};
@@ -457,8 +472,10 @@ function main() {
       return out(d);
     case "context":
       return out(d.platform === "github" ? gh.context(d.repo, requireFlag("pr")) : gl.context(d.repo, requireFlag("pr")));
-    case "threads":
-      return out({ threads: d.platform === "github" ? gh.threads(d.repo, requireFlag("pr")) : gl.threads(d.repo, requireFlag("pr")) });
+    case "threads": {
+      const botLogin = flag("bot-login") || "cc-review[bot]";
+      return out({ threads: d.platform === "github" ? gh.threads(d.repo, requireFlag("pr"), botLogin) : gl.threads(d.repo, requireFlag("pr"), botLogin) });
+    }
     case "get-overview":
       return out(d.platform === "github" ? gh.getOverview(d.repo, requireFlag("pr")) : gl.getOverview(d.repo, requireFlag("pr")));
     case "post-overview":
@@ -488,7 +505,7 @@ function main() {
       const comR = run("gh", ["api", `repos/${repo}/pulls/${pr}/comments`, "--paginate"]);
       if (comR.code !== 0) die("gh list inline comments failed", comR.stderr);
       const comments: Array<unknown> = JSON.parse(comR.stdout || "[]");
-      return out(classifyPosted(reviews, comments, headSha, "cc-review[bot]"));
+      return out(classifyPosted(reviews, comments, headSha, flag("bot-login") || "cc-review[bot]"));
     }
     default:
       return die(`unknown verb: ${verb}`);

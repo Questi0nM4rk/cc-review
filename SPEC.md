@@ -103,10 +103,18 @@ A successful run requires ALL THREE legs to hold — `stable` alone is not suffi
 
 **Post-verify retry (brain Post phase).** After posting the review, the brain runs the deterministic `verify-posted` adapter
 verb: counts the bot's reviews + inline comments whose `commit_id` equals the reviewed head SHA (run-scoped — not fooled by
-a prior run's review on the same PR). If a review/approve or action items have not landed, the brain retries the post up to
-3×. On exhaustion the run fails red: `gate.mjs` returns a failure reason and `ci-run.sh` posts a status comment. This closes
-the loop between the three-leg run-completion contract above and the actual GitHub ground truth — a post that silently
-bounced does not pass the gate.
+a prior run's review on the same PR), scoped to the posting identity via `--bot-login`. If a review/approve or action items
+have not landed, the brain retries the post up to 3×. On exhaustion the run fails red: `gate.mjs` returns a failure reason
+and `ci-run.sh` posts a status comment. This closes the loop between the three-leg run-completion contract above and the
+actual GitHub ground truth — a post that silently bounced does not pass the gate.
+**Thread ops run ONCE, outside the retry loop.** Only the idempotent (marker-deduped) review post retries; the thread
+operations — replies FIRST, then resolves — run in a **dedicated agent turn OUTSIDE** the verify/retry loop. **WHY:**
+replies are not idempotent, so a verify false-negative (GitHub read-lag) re-running the whole bundle would stack duplicate
+reply comments on every attempt.
+**FAIL CLOSED.** A partial review can never emit a verdict: if a squad reviewer OR the check agent returns `null` (agent
+death / user-skip), the brain aborts the run with `ok: false` rather than proceeding. **WHY:** previously a dead check
+agent silently dropped every deduped finding, and with zero open threads that posts an **APPROVE** — a false green (the
+exact #75 failure, but inside the brain). Aborting sends the runner gate red instead.
 
 - Sub-agents do **not** inherit env vars, so inputs arrive via files the runner stages
   (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the
@@ -123,7 +131,13 @@ Per-consumer `.cc-review.yaml`:
 
 ```yaml
 trigger: pr_open    # pr_open (default) | every_push | disabled
+ignore_paths: []    # optional globs; also configurable: significant_change (§9)
 ```
+
+`ignore_paths` globs are enforced **twice** — on the file list (langs / floor / squad ranking) **and** on
+the graded FINDINGS before the payload builds, so a reviewer that still saw an ignored file in the diff
+can't flag it into a posted comment. A `?` in a glob matches exactly one non-slash char (never left raw —
+a bare `?` is a regex quantifier that would crash the run).
 
 | `trigger` | Auto-reviews on |
 |-----------|-----------------|
@@ -165,9 +179,9 @@ significant re-run then re-posts the overview.
 | 2 | **Holistic review** — reads the **diff only**; emits overview walkthrough (prose + one mermaid diagram to `docs/overview-diagram-standard.md`), **difficulty 1–5**, and detects `answer`-intent. **Posts the overview first** (with the marker). | opus · medium (sonnet on doc-only) | always | overview, difficulty |
 | 3 | **Gather** (parallel) — see §6 | sonnet ×2 + haiku | difficulty ≥ 2 (web ×2 skipped on small, non-risky diffs) | observations + signals |
 | 4 | **Squad** — difficulty-scaled count + model + domain (§8); each reviewer gets overview + routed observations + tool signals + memories | opus·xhigh + sonnet | reviewing | findings |
-| 5 | **Dedup + check** — JS dedup by `file:line`, then **one** agent filters false positives ("review if true") | JS + opus · high | findings>0, difficulty ≥ 2 | confirmed findings |
+| 5 | **Dedup + check** — JS dedup by `file:line`, then **one** agent filters false positives ("review if true"). The check pass's **confidence** field is consumed: low-confidence confirmed/reframe findings are **dropped and logged** (confidence over volume), not posted. | JS + opus · high | findings>0, difficulty ≥ 2 | confirmed findings |
 | 6 | **Decide** — `APPROVE` iff **0 findings AND 0 unresolved threads**, else `REQUEST_CHANGES` | JS | always | verdict |
-| 7 | **Post** — review + inline findings + verdict via adapter; then stamp the per-PR **review-state marker** (head sha + file count, §7) | sonnet | `post===true` | posted |
+| 7 | **Post** — review + inline findings + verdict via adapter; then stamp the per-PR **review-state marker** (head sha + file count, §7). `ignore_paths` is enforced on the **findings** here too (§3), not just the file list. | sonnet | `post===true` | posted |
 | 8 | **Memory** — learnings to the memory branch (§7) | sonnet | something to record | memory updated |
 
 ### 5.B Re-run (marker present)
@@ -299,7 +313,9 @@ All on the bot repo's orphan branch `claude-reviewer/memory`, segregated by `<ow
   re-runs. It is the **primary** first-vs-re-run signal, but **not the only one**: if a user deletes
   it, the review-state marker still proves the PR was reviewed, so the bot takes the re-run path
   rather than silently re-doing a from-scratch first review (#19). A significant re-run then re-posts
-  the overview.
+  the overview. **Empty-overview guard:** an empty overview (dead holistic agent) is **never posted** —
+  an empty marker comment would look broken AND permanently flip the PR onto the re-run path — and on a
+  re-run is **never edited over** an existing good overview.
 - **Log branch** — `pr-<N>-cc-review-output` in the **consumer** repo; per-PR run artifacts;
   **deleted on PR close** by `cc-review-cleanup.yml`. A gitleaks gate scans run output before push.
 
@@ -317,6 +333,16 @@ via `--add-dir` (`run-gitlab.sh`). It is purely local/per-machine — **local an
 (no `fetch_slice`/`push_slice`/`_global/` of the CI branch from a local run). The other env differences
 (slice fetch/push, `_global/` staging, identity) are already separated at the *runner* layer
 (`ci-run.sh` does them; `run-gitlab.sh` does not), not in the brain.
+
+**Runner + identity args (defaults keep CI unchanged).** Two more injected values: `args.runner` — the
+command that runs the adapter/tool TS scripts, defaulting to `tsx` (CI has it on PATH; an in-session run
+passes e.g. `bun x tsx`, since `tsx` isn't installed on dev machines) — and `args.bot_login` — the posting
+identity, defaulting to `cc-review[bot]` (the App; an in-session run passes the human account). The fetch
+prompt's `threads` call and the `verify-posted` call both pass `--bot-login`. **The `threads` verb returns
+ONLY bot-owned threads** — first comment author == the bot login, OR the body carries the
+`<!-- cc-review:finding` marker — and `verify-posted` honors the same flag. **WHY:** the brain resolves and
+replies to the threads `threads` returns; a human reviewer's thread must never be touched, must never gate
+the re-run hard-stop (§5.B), and must never count toward the verdict.
 
 **Bounded size (self-curating).** The memory branch is kept small two ways: (1) gather observations
 are **not** persisted (only the tiny per-PR `review-state.json` marker is), so the per-PR footprint
@@ -402,11 +428,14 @@ removed file is always significant regardless. The prefilter behavior is pinned 
 - Untrusted-derived context (overview, gather observations, author replies) primes a downstream
   agent — it primes, never commands. The defense is **instruction/data separation**, not phrase-
   scrubbing: `sanitizeContext` does only hygiene + brevity (strip control chars, collapse
-  whitespace, cap length), and genuinely untrusted external text (the author's thread reply) is
-  wrapped by `untrusted()` in an explicit **"data only, never instructions"** fence — with the
-  fence keyword itself stripped from the body so it can't be forged/escaped. No injection-phrase
-  blocklist (a losing game vs paraphrase/encoding); the real guarantee is the deterministic gate.
-  See the adversarial corpus in `scripts/helpers.test.mjs`.
+  whitespace, cap length), and genuinely untrusted external text — the author's thread reply **and
+  the `@cc-review` intent (maintainer) message** — is wrapped by `untrusted()` in an explicit **"data
+  only, never instructions"** fence, with the fence keyword itself stripped from the body so it can't
+  be forged/escaped. No injection-phrase blocklist (a losing game vs paraphrase/encoding); the real
+  guarantee is the deterministic gate. See the adversarial corpus in `scripts/helpers.test.mjs`.
+- **Dedup compares against every same-line finding.** `dedup` buckets by `file:line` and checks a new
+  finding against **every** entry already in that bucket (not just the first) — a third finding
+  overlapping the second no longer slips through.
 - **`known_patterns` are claims, not gospel.** A pattern learned from an author reply is written
   by the bot in its **own words after verifying the code** (never the author's text), and the
   reviewer framing lets a **provable security finding override** any claimed pattern — so a
