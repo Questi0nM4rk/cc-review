@@ -85,6 +85,8 @@ export function abortCtx(reason) {
     overview_id: null,
     reviewed_file_count: null,
     reviewed_head_sha: "",
+    reviewed_difficulty: null,
+    reviewed_category: "",
   };
 }
 
@@ -102,10 +104,13 @@ export function assembleCtx(pieces) {
   const config = pieces.config && typeof pieces.config === "object" ? pieces.config : {};
   const userMessage = typeof pieces.userMessage === "string" ? pieces.userMessage : "";
 
-  // review-state marker (the prior run's stamp) — only its count + sha; absent ⇒ null/"" (never fabricate).
+  // review-state marker (the prior run's stamp) — count, sha, and (Phase 3p3) difficulty/category.
+  // Absent or old-format markers without difficulty/category → null/"" (backward compat; never fabricate).
   const rs = pieces.reviewState && typeof pieces.reviewState === "object" ? pieces.reviewState : null;
   const reviewed_file_count = rs && Number.isInteger(rs.reviewed_file_count) ? rs.reviewed_file_count : null;
   const reviewed_head_sha = rs && typeof rs.reviewed_head_sha === "string" ? rs.reviewed_head_sha : "";
+  const reviewed_difficulty = rs && Number.isInteger(rs.reviewed_difficulty) && rs.reviewed_difficulty > 0 ? rs.reviewed_difficulty : null;
+  const reviewed_category = rs && typeof rs.reviewed_category === "string" ? rs.reviewed_category : "";
 
   if (pieces.local) {
     // Local dry-run: no PR. Posting is hard-off, no threads, no overview — the brain treats pr_number 0
@@ -125,6 +130,8 @@ export function assembleCtx(pieces) {
       overview_id: null,
       reviewed_file_count,
       reviewed_head_sha,
+      reviewed_difficulty,
+      reviewed_category,
     };
   }
 
@@ -154,6 +161,8 @@ export function assembleCtx(pieces) {
     overview_id,
     reviewed_file_count,
     reviewed_head_sha,
+    reviewed_difficulty,
+    reviewed_category,
   };
 }
 

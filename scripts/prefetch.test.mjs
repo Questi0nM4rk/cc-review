@@ -330,3 +330,61 @@ test("assembleCtx: the abort shape carries the new fields with safe empties", ()
   assert.deepEqual(a.diff_files, []);
   assert.equal(a.added_line_count, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 3 part 3 — reviewed_difficulty / reviewed_category relay
+// ---------------------------------------------------------------------------
+test("assembleCtx: platform mode relays reviewed_difficulty and reviewed_category from a new-format marker", () => {
+  const ctx = assembleCtx({
+    input: { pr_number: 42, repo: "o/r", platform: "github" },
+    context: { diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+x\n", head: "abc123" },
+    threads: [],
+    overview: { id: null },
+    reviewState: { reviewed_head_sha: "oldsha", reviewed_file_count: 3, reviewed_difficulty: 4, reviewed_category: "feature" },
+  });
+  assert.equal(ctx.reviewed_difficulty, 4);
+  assert.equal(ctx.reviewed_category, "feature");
+});
+
+test("assembleCtx: platform mode relays null/empty for reviewed_difficulty/reviewed_category when absent from an old marker (backward compat)", () => {
+  const ctx = assembleCtx({
+    input: { pr_number: 42, repo: "o/r", platform: "github" },
+    context: { diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+x\n", head: "abc123" },
+    threads: [],
+    overview: { id: null },
+    reviewState: { reviewed_head_sha: "oldsha", reviewed_file_count: 3 }, // no difficulty/category
+  });
+  assert.equal(ctx.reviewed_difficulty, null, "missing difficulty -> null");
+  assert.equal(ctx.reviewed_category, "", "missing category -> empty string");
+});
+
+test("assembleCtx: platform mode relays null/empty when reviewState is null (no prior marker)", () => {
+  const ctx = assembleCtx({
+    input: { pr_number: 42, repo: "o/r", platform: "github" },
+    context: { diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+x\n", head: "abc123" },
+    threads: [],
+    overview: { id: null },
+    reviewState: null,
+  });
+  assert.equal(ctx.reviewed_difficulty, null);
+  assert.equal(ctx.reviewed_category, "");
+});
+
+test("assembleCtx: local mode relays reviewed_difficulty and reviewed_category from a new-format marker", () => {
+  const ctx = assembleCtx({
+    local: true,
+    input: { pr_number: 0, repo: "", platform: "github", post: false },
+    config: {},
+    diff: "+x\n",
+    repo: "r",
+    reviewState: { reviewed_head_sha: "h", reviewed_file_count: 2, reviewed_difficulty: 2, reviewed_category: "bugfix" },
+  });
+  assert.equal(ctx.reviewed_difficulty, 2);
+  assert.equal(ctx.reviewed_category, "bugfix");
+});
+
+test("abortCtx: includes reviewed_difficulty null and reviewed_category empty string", () => {
+  const a = abortCtx();
+  assert.equal(a.reviewed_difficulty, null);
+  assert.equal(a.reviewed_category, "");
+});

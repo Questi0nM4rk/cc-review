@@ -127,7 +127,7 @@ CLAUDE.md-in-gather — tracked as later candidates, not this reshape.
 
 - [x] Phase 0 — mock-agent flow harness (#83, merged)
 - [x] Phase 1 — runner prefetch + verbatim relay (#84, merged; as-built amendment above)
-- [ ] Phase 2 — runner-side post module (branch feat/post-module, code complete, in close-out)
+- [x] Phase 2 — runner-side post module (#85, merged f3519f2, 2026-07-04)
   - as-built (docs frozen until the end-of-campaign pass; recorded here so nothing is lost):
     overview post STAYS in the brain (mid-run walkthrough UX); brain returns a post_run
     block, runner executes it (post-run.mjs + post-run verb); findings.jsonl is APPEND
@@ -135,11 +135,16 @@ CLAUDE.md-in-gather — tracked as later candidates, not this reshape.
     (Codex P2 fix); the diff NEVER flows through an LLM — prefetch writes it to disk,
     ctx carries a 20k excerpt + exact diff_files/added_line_count, prompts point agents
     at the file (dogfood-caught truncation bug, pre-dated the reshape)
-  - [ ] minimal dogfood smoke green (one-file diff recipe below; a run may already have
-        finished — check before re-spending)
-  - [ ] final review of the settled tree (Codex is OFF — usage limits; use the session's
-        /code-review or a fresh-eyes subagent pass)
-  - [ ] PR + merge (standing admin-squash-merge for phase PRs when gates are green)
+  - [x] minimal dogfood smoke green (ok:true / mode:first / post_run:null, d3)
+  - [x] final review (Claude multi-angle pass, brain-scoped fixes landed in #85:
+        sigChangePrefilter exact ctx count; a.diff fallback removed; dead diff param
+        dropped from 7 prompt builders; fail-closed diff_path-mismatch abort).
+        Wrapper-layer findings PARKED for a later pass (user scoped the review to the
+        brain only): post-run.mjs retry loop lacks try/catch around post/verify (a
+        transient gh throw aborts instead of counting as a failed attempt); gitlab
+        rerun-nag has no dedup; ci-run.sh doesn't rm -f stale .cc-run/*.json;
+        postRun().catch re-throw = unhandled rejection; reply comment_id null guard.
+  - [x] PR + merge (#85, admin-squash)
 - [ ] Implementer-subagent improvement pass in qsm-marketplace2 (brain/subagent/implementer;
       evidence file: /tmp/cc-review-implementer-observations.md)
 - [ ] Phase 3 — squad reshape (correctness anchor; check at every depth; MERGE THE TWO

@@ -115,14 +115,16 @@ const graded = (f, verdict = "confirmed", confidence = "high") => ({ original: f
 // these (longest/most-specific key wins). A value may be a plain object/string/null, or a function
 // of (prompt, opts) for stateful stubs (e.g. the verify-retry loop).
 const DEFAULTS = {
-  intent: { is_question: false },
-  holistic: { category: "other", difficulty: 3, overview_markdown: "## Overview\n\nDoes stuff.\n" },
-  "research:": { source: "web", observations: [] },
+  // Phase 3p2: intent folded into holistic — is_question/answer now required fields on holistic schema
+  holistic: { category: "other", difficulty: 3, overview_markdown: "## Overview\n\nDoes stuff.\n", is_question: false, answer: "" },
+  // Phase 3p2: merged single research agent (label: "research", not "research:ai-slop"/"research:general")
+  "research": { source: "research", observations: [] },
   "memories+docs": { notes: [] },
   tools: { available: [], findings: [], outcomes: [] },
   "review:": { findings: [] },
   check: { graded: [] },
-  "thread:": { thread_id: "T1", action: "keep", reason: "still valid" },
+  // Phase 3p2: comment-mgmt is a single batch call (label: "comment-mgmt"); returns { actions: [] }
+  "comment-mgmt": { actions: [] },
   "sig-change": { significant: false, reason: "minor" },
   // Reshape Phase 2: the ONLY posting agent left in the brain is the mid-run overview post/edit.
   // post-answer / post-gate(nag) / thread-ops / post-review / verify-posted / post-ops are GONE —
@@ -275,10 +277,11 @@ test("scenario 5: fetch resolving PR #9 when #7 was requested aborts", async () 
 // Scenario 6 — answer mode (a maintainer question)
 // ---------------------------------------------------------------------------
 test("scenario 6: a maintainer question is answered and stops; NO posting agent, post_run null, answer carried", async () => {
+  // Phase 3p2: intent detection folded into holistic — is_question/answer come from the holistic result.
   const { result, calls } = await run({
     fetch: baseFetch({ pr_number: 42, repo: "o/r", post: true, user_message: "Why did you rename foo?" }),
     agents: {
-      intent: { is_question: true, answer: "Because foo shadowed a builtin." },
+      holistic: { category: "other", difficulty: 3, overview_markdown: "## Overview\n\nAdds y.\n", is_question: true, answer: "Because foo shadowed a builtin." },
     },
   });
 
@@ -289,6 +292,8 @@ test("scenario 6: a maintainer question is answered and stops; NO posting agent,
   assert.equal(result.post_run, null, "answer is comment-only — post_run is null");
   assertNoPostAgents(calls); // the runner posts the answer via post-overview, not a brain agent
   assert.equal(has(calls, "review:"), false, "answer mode never runs the squad");
+  // The separate 'intent' agent must not appear — intent is now decided by holistic.
+  assert.equal(has(calls, "intent"), false, "intent agent must not be called — intent is folded into holistic");
 });
 
 // ---------------------------------------------------------------------------
@@ -311,7 +316,10 @@ test("scenario 7: a re-run with unanswered threads and no ping is blocked before
   assert.equal(result.post, true, "the block carries the post flag for the runner");
   assert.equal(result.post_run, null, "rerun-blocked posts a nag comment, not a review — post_run is null");
   assert.equal(has(calls, "review:"), false, "the squad must not run while the review is blocked");
-  assert.equal(has(calls, "holistic"), false, "holistic must not run while blocked");
+  // Phase 3p3: on a message-less blocked rerun, the blocked-gate fires FIRST — zero agent calls beyond
+  // fetch (holistic must NOT run, spending zero quota on a blocked run).
+  assert.equal(has(calls, "holistic-rerun"), false, "holistic-rerun must NOT run on a message-less blocked rerun (Phase 3p3: gate fires first)");
+  assert.equal(has(calls, "comment-mgmt"), false, "comment-mgmt must not run while blocked");
   assertNoPostAgents(calls); // the runner posts the nag via post-overview (marker-deduped), not a brain agent
 });
 
@@ -319,6 +327,7 @@ test("scenario 7: a re-run with unanswered threads and no ping is blocked before
 // Scenario 8 — re-run happy path: all threads answered
 // ---------------------------------------------------------------------------
 test("scenario 8: a re-run with all threads answered runs comment-mgmt, holistic-rerun and the squad", async () => {
+  // Phase 3p2: comment-mgmt is now ONE batched call (label "comment-mgmt"), not one per thread.
   const { result, calls } = await run({
     fetch: baseFetch({
       pr_number: 0, repo: "", post: false,
@@ -329,13 +338,19 @@ test("scenario 8: a re-run with all threads answered runs comment-mgmt, holistic
       ],
     }),
     agents: {
-      "thread:": { thread_id: "T1", action: "keep", reason: "still open" },
+      // Batch result: keep both threads
+      "comment-mgmt": { actions: [
+        { thread_id: "T1", action: "keep", reason: "still open" },
+        { thread_id: "T2", action: "keep", reason: "still open" },
+      ] },
     },
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.mode, "rerun");
-  assert.equal(count(calls, "thread:"), 2, "one comment-mgmt agent per prior thread");
+  // Phase 3p2: ONE batch call, not N per-thread calls
+  assert.equal(count(calls, "comment-mgmt"), 1, "exactly one batched comment-mgmt call for all threads");
+  assert.equal(has(calls, "thread:"), false, "per-thread 'thread:' agents must NOT fire — batched now");
   assert.equal(has(calls, "holistic-rerun"), true, "the re-run re-orients via holistic-rerun");
   assert.equal(has(calls, "review:"), true, "the squad re-reviews on a re-run");
 });
@@ -403,6 +418,7 @@ test("scenario 9: a posted first review posts NO review agent, posts the overvie
 // post-run.mjs's { thread, comment_id, body } reply shape.
 // ---------------------------------------------------------------------------
 test("scenario 9b: a posted re-run maps comment-mgmt actions into the post_run replies + resolve_ids", async () => {
+  // Phase 3p2: comment-mgmt is now a single batch call returning { actions: [...] }.
   const { result, calls } = await run({
     fetch: baseFetch({
       pr_number: 42, repo: "o/r", platform: "github", head_sha: "cafef00d", post: true,
@@ -414,9 +430,11 @@ test("scenario 9b: a posted re-run maps comment-mgmt actions into the post_run r
     }),
     args: { mem_dir: "/mem" },
     agents: {
-      // T1 -> resolve (carries a Fixed: message -> a reply too); T2 -> reply (still wrong).
-      "thread:src/a.ts:2": { thread_id: "T1", action: "resolve", reason: "fixed", reply_body: "Fixed: removed y" },
-      "thread:src/a.ts:5": { thread_id: "T2", action: "reply", reason: "still wrong", reply_body: "Still unused" },
+      // Batch: T1 -> resolve (Fixed: message); T2 -> reply (still wrong).
+      "comment-mgmt": { actions: [
+        { thread_id: "T1", action: "resolve", reason: "fixed", reply_body: "Fixed: removed y" },
+        { thread_id: "T2", action: "reply", reason: "still wrong", reply_body: "Still unused" },
+      ] },
       "review:": { findings: [] }, // APPROVE-able findings; the re-run still runs the squad
     },
   });
@@ -424,6 +442,9 @@ test("scenario 9b: a posted re-run maps comment-mgmt actions into the post_run r
   assert.equal(result.ok, true);
   assert.equal(result.mode, "rerun");
   assertNoPostAgents(calls);
+  // ONE batch call, not per-thread calls
+  assert.equal(count(calls, "comment-mgmt"), 1, "exactly one batched comment-mgmt call");
+  assert.equal(has(calls, "thread:"), false, "per-thread 'thread:' agents must NOT fire");
 
   const pr = result.post_run;
   assert.ok(pr, "post_run present on a posted re-run");
@@ -594,4 +615,459 @@ test("scenario 14c: ctx without diff_path (older ctx) is accepted (no abort)", a
 
   assert.equal(result.ok, true, "a ctx without diff_path must not abort");
   assert.equal(result.mode, "first");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 — correctness anchor + PATH reshape scenarios
+// ---------------------------------------------------------------------------
+
+// Scenario 15 — d1 now runs the check agent (sonnet model)
+test("scenario 15: d1 path runs the check agent (sonnet) — no passthrough bypass", async () => {
+  const f = finding();
+  const { result, calls } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false }),
+    agents: {
+      holistic: { category: "other", difficulty: 1, overview_markdown: "x" },
+      // correctness anchor returns a finding
+      "review:correctness": { findings: [f] },
+      // check agent (sonnet at d1) confirms it
+      check: { graded: [graded(f)] },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.reviewed, true);
+  // check must have been called at d1
+  assert.equal(has(calls, "check"), true, "d1 must call the check agent");
+  // the finding survived check
+  assert.equal(result.totals.confirmed, 1, "the confirmed finding is kept");
+});
+
+test("scenario 15b: d1 check agent death aborts fail-closed", async () => {
+  const f = finding();
+  const { result, calls } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false }),
+    agents: {
+      holistic: { category: "other", difficulty: 1, overview_markdown: "x" },
+      "review:correctness": { findings: [f] },
+      check: null, // agent death at d1
+    },
+  });
+
+  assert.equal(result.ok, false, "a dead check agent at d1 must abort fail-closed");
+  assert.match(result.reason, /check agent/i);
+  assert.equal(has(calls, "post-review"), false);
+  assert.equal(has(calls, "memory"), false);
+});
+
+// Scenario 16 — d3: 1 anchor + 1 opus specialist; shape unchanged otherwise
+test("scenario 16: d3 path runs 1 correctness anchor + 1 opus specialist + 1 check vote", async () => {
+  const f = finding();
+  const { result, calls } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false }),
+    agents: {
+      holistic: { category: "other", difficulty: 3, overview_markdown: "x" },
+      "review:correctness": { findings: [f] },
+      "review:": { findings: [] },
+      // single check vote at d3
+      check: { graded: [graded(f)] },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  // correctness anchor fires (single label, not #1/#2)
+  assert.equal(has(calls, "review:correctness"), true, "d3 must have a correctness anchor");
+  assert.equal(has(calls, "review:correctness#1"), false, "d3: must use single anchor label, not #1");
+  // one opus specialist fires (not correctness)
+  const specialistCalls = calls.filter((c) => c.label.startsWith("review:") && !c.label.startsWith("review:correctness"));
+  assert.equal(specialistCalls.length, 1, "d3: exactly 1 specialist besides the anchor");
+  // exactly 1 check call (not #1/#2)
+  assert.equal(count(calls, "check"), 1, "d3: exactly 1 check vote");
+  assert.equal(has(calls, "check#1"), false, "d3: must not use the 2-vote check labels");
+  assert.equal(result.totals.confirmed, 1);
+});
+
+// Scenario 17 — d5: 2 independent anchors + 2 check votes in parallel
+test("scenario 17: d5 path runs 2 correctness anchors and 2 check votes in parallel", async () => {
+  const f = finding();
+  const { result, calls } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false }),
+    agents: {
+      holistic: { category: "other", difficulty: 5, overview_markdown: "x" },
+      "review:correctness#1": { findings: [f] },
+      "review:correctness#2": { findings: [f] },
+      // both check votes confirm the finding
+      "check#1": { graded: [graded(f)] },
+      "check#2": { graded: [graded(f)] },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(count(calls, "review:correctness"), 2, "d5: exactly 2 correctness anchors (#1 and #2)");
+  assert.equal(has(calls, "check#1"), true, "d5: check#1 must fire");
+  assert.equal(has(calls, "check#2"), true, "d5: check#2 must fire");
+  assert.equal(result.totals.confirmed, 1, "finding confirmed by both votes survives");
+});
+
+test("scenario 17b: d5 — a finding kept by only vote1 does NOT post (must survive BOTH)", async () => {
+  const fA = finding({ file: "src/a.ts", line: 2, description: "Remove the unused variable y" });
+  const fB = finding({ file: "src/b.ts", line: 5, description: "Fix the null deref on entry" });
+  const { result } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false }),
+    agents: {
+      holistic: { category: "other", difficulty: 5, overview_markdown: "x" },
+      "review:correctness#1": { findings: [fA, fB] },
+      "review:correctness#2": { findings: [fA, fB] },
+      // vote1 keeps both; vote2 keeps only fA (refutes fB)
+      "check#1": { graded: [graded(fA), graded(fB)] },
+      "check#2": { graded: [graded(fA), { original: fB, verdict: "false-positive", confidence: "high" }] },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  // Only fA survived both votes
+  assert.equal(result.totals.confirmed, 1, "only the finding confirmed by both votes survives");
+  const payloadStr = JSON.stringify(result.payload);
+  assert.ok(payloadStr.includes("src/a.ts"), "fA (survived both) is in the payload");
+  assert.equal(payloadStr.includes("src/b.ts"), false, "fB (kept only by vote1) must NOT post");
+});
+
+test("scenario 17c: d5 — either dead check vote aborts fail-closed", async () => {
+  const f = finding();
+  // vote1 dead
+  const { result: r1 } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false }),
+    agents: {
+      holistic: { category: "other", difficulty: 5, overview_markdown: "x" },
+      "review:": { findings: [f] },
+      "check#1": null,
+      "check#2": { graded: [graded(f)] },
+    },
+  });
+  assert.equal(r1.ok, false, "dead check#1 must abort fail-closed");
+  assert.match(r1.reason, /check agent/i);
+
+  // vote2 dead
+  const { result: r2 } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false }),
+    agents: {
+      holistic: { category: "other", difficulty: 5, overview_markdown: "x" },
+      "review:": { findings: [f] },
+      "check#1": { graded: [graded(f)] },
+      "check#2": null,
+    },
+  });
+  assert.equal(r2.ok, false, "dead check#2 must abort fail-closed");
+  assert.match(r2.reason, /check agent/i);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 part 2 — agent-call-cut scenarios
+// ---------------------------------------------------------------------------
+
+// Scenario 18 — answer mode via holistic on a first review (no separate intent agent)
+test("scenario 18: answer mode fires from holistic.is_question on a first review, squad never runs", async () => {
+  const { result, calls } = await run({
+    fetch: baseFetch({ pr_number: 42, repo: "o/r", post: false, user_message: "What does this PR do?" }),
+    agents: {
+      holistic: { category: "other", difficulty: 3, overview_markdown: "x", is_question: true, answer: "It adds feature Y." },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "answer");
+  assert.equal(result.answer, "It adds feature Y.");
+  assert.equal(has(calls, "intent"), false, "no separate intent agent must fire");
+  assert.equal(has(calls, "review:"), false, "squad must not run in answer mode");
+  assert.equal(has(calls, "post-overview"), false, "overview must not be posted before answering");
+});
+
+// Scenario 18b — answer mode via holistic on a re-run, fires BEFORE the blocked-gate
+test("scenario 18b: answer mode on a re-run fires before the rerun-blocked gate (question wins over nag)", async () => {
+  const { result, calls } = await run({
+    fetch: baseFetch({
+      pr_number: 42, repo: "o/r", post: false,
+      overview_id: 123,
+      ping_override: false,
+      user_message: "Why is this needed?",
+      // unanswered thread — would normally trigger rerun-blocked
+      threads: [baseThread({ id: "T1", author_replied: false })],
+    }),
+    agents: {
+      holistic: { category: "other", difficulty: 3, overview_markdown: "x", is_question: true, answer: "Because of X." },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "answer", "a question wins over the rerun-blocked gate");
+  assert.equal(result.answer, "Because of X.");
+  assert.equal(has(calls, "comment-mgmt"), false, "comment-mgmt must not run in answer mode");
+  assert.equal(has(calls, "review:"), false, "squad must not run in answer mode");
+});
+
+// Scenario 19 — single research agent at d3 (not two separate agents)
+test("scenario 19: d3 gather fires exactly one 'research' agent (merged), not two separate ones", async () => {
+  // Use a diff large enough to skip the web-research skip gate (added >= 50 lines).
+  const LARGE_DIFF = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,52 @@\n` +
+    Array.from({ length: 51 }, (_, i) => `+const x${i} = ${i};`).join("\n");
+  const { calls } = await run({
+    fetch: baseFetch({
+      pr_number: 0, repo: "", post: false,
+      diff: LARGE_DIFF,
+      diff_files: ["src/a.ts"],
+      added_line_count: 51,
+    }),
+    agents: {
+      holistic: { category: "other", difficulty: 3, overview_markdown: "x", is_question: false, answer: "" },
+    },
+  });
+
+  // Exactly one research call with the merged label
+  assert.equal(count(calls, "research"), 1, "exactly one merged research agent at d3");
+  assert.equal(has(calls, "research:ai-slop"), false, "old research:ai-slop label must not fire");
+  assert.equal(has(calls, "research:general"), false, "old research:general label must not fire");
+});
+
+// Scenario 20 — batched comment-mgmt: N threads → one agent call, threadActions map correctly
+test("scenario 20: N threads produce exactly one comment-mgmt call; resolve/reply/keep map to threadActions", async () => {
+  const threads = [
+    baseThread({ id: "T1", line: 2, author_replied: true, comment_db_id: 900 }),
+    baseThread({ id: "T2", line: 5, author_replied: true, comment_db_id: 901 }),
+    // T3 has bot_replied_last=true: author hasn't replied but bot already has the last word,
+    // so author_replied=true (the blocking gate checks author_replied only)
+    baseThread({ id: "T3", line: 8, author_replied: true, bot_replied_last: true, comment_db_id: 902 }),
+  ];
+  const { result, calls } = await run({
+    fetch: baseFetch({ pr_number: 0, repo: "", post: false, overview_id: 123, threads }),
+    agents: {
+      "comment-mgmt": { actions: [
+        { thread_id: "T1", action: "resolve", reason: "fixed", reply_body: "Fixed: removed y" },
+        { thread_id: "T2", action: "reply", reason: "still wrong", reply_body: "Still unused" },
+        // T3 -> keep (no reply because bot_replied_last)
+        { thread_id: "T3", action: "keep", reason: "unchanged" },
+      ] },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(count(calls, "comment-mgmt"), 1, "one batch call regardless of thread count");
+  assert.equal(has(calls, "thread:"), false, "no per-thread calls must fire");
+  // T1 resolved → not in stillOpen; T2+T3 open → stillOpen = 2
+  assert.equal(result.threadActions.filter((a) => a.action === "resolve").length, 1, "one resolve action");
+  assert.equal(result.threadActions.filter((a) => a.action === "reply").length, 1, "one reply action");
+});
+
+// Scenario 21 — hallucinated thread_id guard: unknown ids in batch response are dropped
+test("scenario 21: batch comment-mgmt actions with unknown thread_ids are dropped (hallucination guard)", async () => {
+  const { result, logs } = await run({
+    fetch: baseFetch({
+      pr_number: 0, repo: "", post: false, overview_id: 123,
+      threads: [baseThread({ id: "T1", author_replied: true })],
+    }),
+    agents: {
+      "comment-mgmt": { actions: [
+        { thread_id: "T1", action: "keep", reason: "ok" },
+        { thread_id: "HALLUCINATED-99", action: "resolve", reason: "phantom" },
+      ] },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  // Only T1 survives; HALLUCINATED-99 is dropped
+  assert.equal(result.threadActions.length, 1, "hallucinated thread_id must be dropped");
+  assert.equal(result.threadActions[0].thread_id, "T1");
+  assert.ok(logs.some((l) => /hallucinated/i.test(l)), "the drop must be logged");
+});
+
+// Scenario 22 — null batch result treated as empty actions (non-fail-closed)
+test("scenario 22: a null comment-mgmt batch result is treated as no actions (keep all) — non-fail-closed", async () => {
+  const { result, logs } = await run({
+    fetch: baseFetch({
+      pr_number: 0, repo: "", post: false, overview_id: 123,
+      threads: [baseThread({ id: "T1", author_replied: true })],
+    }),
+    agents: {
+      "comment-mgmt": null, // agent death
+    },
+  });
+
+  assert.equal(result.ok, true, "null batch result must not abort the run");
+  assert.equal(result.threadActions.length, 0, "null batch → no actions (all threads kept)");
+  assert.ok(logs.some((l) => /null|comment-mgmt.*null/i.test(l)), "null batch must be logged");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 part 3 — cheap re-run / persisted difficulty+category
+// ---------------------------------------------------------------------------
+
+// Helper: a baseFetch for re-runs with prev marker having the new fields.
+const rerunFetch = (o = {}) => baseFetch({
+  overview_id: 123,
+  reviewed_file_count: 1,
+  reviewed_head_sha: "prevsha",
+  reviewed_difficulty: 3,
+  reviewed_category: "feature",
+  threads: [],
+  ...o,
+});
+
+// Scenario 23 (a) — message-less non-significant rerun with persisted fields → NO holistic call.
+// The prefilter sees the same 1-file/1-added-line diff as the prev run (not significant), and the
+// marker carries difficulty/category, so holistic is skipped entirely.
+test("scenario 23a: message-less non-significant rerun with persisted marker fields skips holistic, uses marker difficulty/category", async () => {
+  const { result, calls, logs } = await run({
+    fetch: rerunFetch({ post: false }),
+    agents: {
+      // holistic must NOT be called — if it were called, we'd still route it via DEFAULTS but we want to
+      // assert the label never fires.
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "rerun");
+  assert.equal(has(calls, "holistic-rerun"), false, "holistic-rerun must not be called on a non-significant rerun with persisted fields");
+  // difficulty = max(marker.reviewed_difficulty, difficultyFloor().floor); SMALL_DIFF has floor=1, marker=3 → 3
+  assert.equal(result.difficulty, 3, "difficulty comes from the marker reviewed_difficulty (floored to max)");
+  assert.equal(result.event, "APPROVE", "no findings → APPROVE");
+  assert.ok(logs.some((l) => /holistic.*skip/i.test(l)), "must log that holistic was skipped");
+  assert.equal(has(calls, "sig-change"), false, "no sig-change agent on a prefilter-decided non-significant run");
+  assert.equal(has(calls, "review:"), true, "squad still runs even on a non-significant rerun");
+});
+
+// Scenario 23 (b) — rerun without persisted fields (old marker) → holistic runs as today.
+test("scenario 23b: rerun without persisted marker fields falls back to holistic as today", async () => {
+  const { result, calls } = await run({
+    fetch: baseFetch({
+      overview_id: 123,
+      reviewed_file_count: 1,
+      reviewed_head_sha: "prevsha",
+      // no reviewed_difficulty / reviewed_category
+      threads: [],
+      post: false,
+    }),
+    agents: {
+      "holistic-rerun": { category: "bugfix", difficulty: 2, overview_markdown: "x", is_question: false, answer: "" },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "rerun");
+  assert.equal(has(calls, "holistic-rerun"), true, "holistic-rerun must run when marker lacks persisted fields");
+  assert.equal(result.difficulty, 2, "difficulty comes from holistic when marker lacks fields");
+});
+
+// Scenario 23 (c) — blocked message-less rerun → zero agent calls after fetch, NO holistic.
+// On message-less reruns the blocked-gate fires FIRST (before any agent call beyond fetch).
+test("scenario 23c: blocked message-less rerun fires the gate before any agent call — zero holistic/squad calls", async () => {
+  const { result, calls } = await run({
+    fetch: rerunFetch({
+      post: true,
+      ping_override: false,
+      threads: [baseThread({ id: "T1", author_replied: false })],
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "rerun-blocked");
+  assert.equal(has(calls, "holistic-rerun"), false, "holistic must NOT fire before the blocked gate on a message-less rerun");
+  assert.equal(has(calls, "comment-mgmt"), false, "comment-mgmt must not run while blocked");
+  assert.equal(has(calls, "review:"), false, "squad must not run while blocked");
+});
+
+// Scenario 23 (d) — significant rerun (diff grew big) with persisted fields → holistic runs + overview edited.
+test("scenario 23d: significant rerun runs holistic and edits the overview in place", async () => {
+  // Use a diff with >= 2× addedLines (300 >= 150*2) so bigAbsoluteAdd fires → decided:true, significant:true.
+  // This avoids the borderline (160 added lines with 1 file vs 1 prev file only hits nearLines, not decided).
+  const BIG_DIFF = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,300 @@\n`
+    + Array.from({ length: 300 }, (_, i) => `+const x${i} = ${i};`).join("\n");
+  const { result, calls } = await run({
+    fetch: rerunFetch({
+      post: true,
+      diff: BIG_DIFF,
+      diff_files: ["src/a.ts"],
+      added_line_count: 300, // >= 150*2 → bigAbsoluteAdd → decided:true, significant:true
+    }),
+    agents: {
+      "holistic-rerun": { category: "feature", difficulty: 4, overview_markdown: "## Overview\n\nBig change.\n", is_question: false, answer: "" },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "rerun");
+  assert.equal(has(calls, "holistic-rerun"), true, "holistic-rerun must run on a significant rerun");
+  assert.equal(has(calls, "edit-overview"), true, "overview must be edited in place on a significant rerun");
+});
+
+// Scenario 23 (e) — borderline rerun: sig-change confirm runs FIRST, then skips holistic on not-significant with persisted fields.
+test("scenario 23e: borderline rerun runs sig-change confirm before holistic; skips holistic when confirmed not-significant + marker has fields", async () => {
+  // A diff that is borderline: near the files/lines threshold but not clearly over.
+  // SMALL_DIFF has 1 file, 1 added line vs prev 1 file. We need near-threshold. Let's set
+  // reviewed_file_count high enough that pct is borderline, and added lines near the line floor.
+  // With SIG = { filesPct: 0.25, addedLines: 150, borderline: 0.2 }:
+  // nearLines = added >= 150 * (1-0.2) = 120 → use 125 added lines.
+  const BORDERLINE_DIFF = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,126 @@\n`
+    + Array.from({ length: 125 }, (_, i) => `+const x${i} = ${i};`).join("\n");
+  const { result, calls, logs } = await run({
+    fetch: rerunFetch({
+      post: false,
+      diff: BORDERLINE_DIFF,
+      diff_files: ["src/a.ts"],
+      added_line_count: 125, // nearLines (>= 120) -> borderline -> decided:false
+    }),
+    agents: {
+      // sig-change confirm: not significant
+      "sig-change": { significant: false, reason: "minor tweak" },
+      // holistic-rerun must NOT be called when sig-change says not-significant and marker has fields
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "rerun");
+  assert.equal(has(calls, "sig-change"), true, "sig-change confirm must run on a borderline diff");
+  assert.equal(has(calls, "holistic-rerun"), false, "holistic-rerun must not run when confirm says not-significant + marker has persisted fields");
+  assert.ok(logs.some((l) => /holistic.*skip/i.test(l)), "must log that holistic was skipped");
+  assert.equal(result.difficulty, 3, "difficulty from marker when holistic skipped");
+});
+
+// Scenario 23 (e2) — borderline but sig-change confirms significant → holistic runs.
+test("scenario 23e2: borderline rerun where confirm says significant runs holistic normally", async () => {
+  const BORDERLINE_DIFF = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,126 @@\n`
+    + Array.from({ length: 125 }, (_, i) => `+const x${i} = ${i};`).join("\n");
+  const { result, calls } = await run({
+    fetch: rerunFetch({
+      post: false,
+      diff: BORDERLINE_DIFF,
+      diff_files: ["src/a.ts"],
+      added_line_count: 125,
+    }),
+    agents: {
+      "sig-change": { significant: true, reason: "substantial" },
+      "holistic-rerun": { category: "refactor", difficulty: 3, overview_markdown: "x", is_question: false, answer: "" },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "rerun");
+  assert.equal(has(calls, "sig-change"), true, "sig-change confirm runs for borderline");
+  assert.equal(has(calls, "holistic-rerun"), true, "holistic-rerun runs when confirm says significant");
+});
+
+// Scenario 24 — review_state includes reviewed_difficulty and reviewed_category on a first review.
+test("scenario 24: a posted first review includes reviewed_difficulty and reviewed_category in post_run.review_state", async () => {
+  const { result } = await run({
+    fetch: baseFetch({ pr_number: 42, repo: "o/r", platform: "github", post: true }),
+    agents: {
+      holistic: { category: "bugfix", difficulty: 4, overview_markdown: "## Overview\n\nFixes bug.\n", is_question: false, answer: "" },
+      "review:": { findings: [] },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.post_run, "post_run present");
+  const state = JSON.parse(result.post_run.review_state);
+  assert.ok("reviewed_difficulty" in state, "review_state must include reviewed_difficulty");
+  assert.ok("reviewed_category" in state, "review_state must include reviewed_category");
+  // difficulty = max(holistic.difficulty=4, floor=1) = 4
+  assert.equal(state.reviewed_difficulty, 4, "reviewed_difficulty matches the run's difficulty");
+  assert.equal(state.reviewed_category, "bugfix", "reviewed_category matches the holistic category");
 });
