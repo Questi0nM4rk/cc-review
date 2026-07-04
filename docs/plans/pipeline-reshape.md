@@ -52,6 +52,13 @@ release, then delete it + the identity gate (data now comes from code, not an LL
 AC: CI + local + gitlab entry all pass ctx; mock-harness tests for both branches;
 one live --ref dispatch green.
 
+**Amended (as-built):** the Workflow runtime has no filesystem access, so the context can't be
+`cat`-ed by the brain nor ride in `args.ctx` (the whole diff) — assembly moved entirely to the
+runner. A `prefetch` verb in `review-platform.ts` writes the FETCH_SCHEMA-shaped context to
+`/tmp/cc-ctx.json` (`args.ctx_path`) and ONE verbatim-relay fetch agent returns it. What's deleted
+is the 7-step LLM assembly + the LLM YAML parsing of `.cc-review.yaml`, NOT the agent itself; the
+downstream identity/abort gate stays (it now guards the relayed abort shape).
+
 ### Phase 2 — runner-side post module
 
 New `scripts/post-review.mjs` (pure core + thin CLI): replies-once → resolves →

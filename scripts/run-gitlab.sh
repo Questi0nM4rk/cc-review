@@ -80,6 +80,12 @@ printf '{ "pr_number": %s, "repo": "%s", "platform": "gitlab", "post": %s, "ping
 
 echo "cc-review (GitLab local) — repo=$REPO  MR=!$MR  host=$HOST  post=$POST  mem=$MEMDIR"
 
+# Assemble the review context deterministically (reshape Phase 1) into /tmp/cc-ctx.json — the brain's
+# fetch agent relays it verbatim (the Workflow runtime has no fs access). Real GitLab context/threads/
+# get-overview via glab; the prior review-state marker lives under $MEMDIR (local memory, #73). A
+# platform failure yields the abort shape so the brain aborts instead of reviewing a fallback.
+tsx "$ADAPTER" prefetch --pr "$MR" --bot-login "cc-review[bot]" --mem-dir "$MEMDIR" > /tmp/cc-ctx.json
+
 # bot_dir is passed via args so the brain builds absolute adapter/tool paths (it can't read
 # $CC_REVIEW_BOT_DIR — sub-agents don't inherit env). Locally BOT is the bot repo root.
 PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: ${MR}, repo: '${REPO}', bot_dir: '${BOT}', mem_dir: '${MEMDIR}' }. Run it to completion and report its return value verbatim as JSON. It reads PR/MR number, repo, post-flag, and the @cc-review message from /tmp/cc-input.json + /tmp/cc-user-msg.txt, talks to GitLab via glab through ${ADAPTER}, reads/writes local review memory under ${MEMDIR}, and reads project config from .cc-review.yaml."

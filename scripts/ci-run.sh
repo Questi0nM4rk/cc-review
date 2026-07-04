@@ -122,6 +122,13 @@ jq -n --arg pr "$PR_NUMBER" --arg repo "$REPO" --arg post "$CC_POST" --argjson p
   '{pr_number:($pr|tonumber), repo:$repo, platform:"github", post:($post=="1"), ping_override:$ping}' > /tmp/cc-input.json
 MSG_CLAUSE=""
 [ -s /tmp/cc-user-msg.txt ] && MSG_CLAUSE=", and the maintainer @cc-review message from /tmp/cc-user-msg.txt"
+# Assemble the WHOLE review context deterministically (reshape Phase 1). The Workflow runtime has no
+# filesystem access, so the runner — not an LLM — runs the adapter context/threads/get-overview calls,
+# reads .cc-review.yaml + the prior review-state marker, and writes the FETCH_SCHEMA-shaped JSON to
+# /tmp/cc-ctx.json; the brain's fetch agent relays that file verbatim. A platform failure yields the
+# abort shape (pr_number 0) so the brain aborts instead of reviewing a fallback diff.
+tsx "$CC_REVIEW_BOT_DIR/scripts/review-platform.ts" prefetch \
+  --pr "$PR_NUMBER" --bot-login "cc-review[bot]" --mem-dir .cc-memory > /tmp/cc-ctx.json
 # bot_dir is passed via args (not an env var): the sandboxed brain agents don't inherit env, and
 # the agent shell can't expand $CC_REVIEW_BOT_DIR — it would collapse to the consumer repo root.
 PROMPT="Use the Workflow tool with scriptPath '${CC_REVIEW_BOT_DIR}/.claude/workflows/strict-review.mjs' and args { bot_dir: '${CC_REVIEW_BOT_DIR}' }. Run it to completion. The workflow reads PR number, repo, post-flag, and project config from /tmp/cc-input.json, /tmp, and .cc-review.yaml${MSG_CLAUSE}. When the Workflow tool RETURNS, write its return value verbatim as JSON to ${WS}/.cc-run/cc-result.json using a bash cat-heredoc (NOT the Write tool) — this file is the run's completion sentinel. Write it ONLY if the Workflow returned; if it did not return, write nothing. Then, as your final output, print this exact line on its own and nothing after it: <<<CC_REVIEW_COMPLETE>>>"

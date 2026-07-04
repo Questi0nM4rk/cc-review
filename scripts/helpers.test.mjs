@@ -795,9 +795,15 @@ test("intentPrompt: a forged fence-close inside the message is neutralized", () 
   assert.equal(closes.length, 1);
 });
 
-test("fetchPrompt: the threads call passes a quoted --bot-login", () => {
-  const p = H.fetchPrompt({});
-  assert.ok(p.includes('threads --pr <pr_number> --bot-login "cc-review[bot]"'));
+test("fetchPrompt: relays the runner-assembled ctx file verbatim, with an abort fallback", () => {
+  const p = H.fetchPrompt();
+  // Assembly moved to the prefetch verb (review-platform.ts); the brain only cats the ctx file and
+  // returns it VERBATIM — no more adapter/threads calls or LLM YAML parsing in the fetch prompt.
+  assert.ok(p.includes("/tmp/cc-ctx.json"));
+  assert.ok(p.includes("VERBATIM"));
+  // Missing/unreadable ctx => the abort shape so the orchestrator aborts instead of reviewing a fallback.
+  assert.ok(p.includes('"pr_number":0'));
+  assert.ok(p.includes('"diff":""'));
 });
 
 test("verifyPostedPrompt: passes a quoted --bot-login to the adapter verb", () => {

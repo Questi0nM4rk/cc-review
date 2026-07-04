@@ -22,7 +22,7 @@ set -euo pipefail
 #    scripts/run-local.sh --message "@cc-review focus on auth"   set the maintainer message
 #    scripts/run-local.sh --scaffold-only       write /tmp files, print the in-session call, then stop
 #
-#  Requires: claude, tsx, git on PATH (gh only for --pr mode).
+#  Requires: claude, tsx, git on PATH (tsx runs the prefetch verb in every mode; gh only for --pr mode).
 # ============================================================================
 
 BOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,7 +51,7 @@ Posting is ALWAYS off locally (post=false) — this never touches a real PR.
   scripts/run-local.sh --message "<text>"    set the maintainer message (simulate @cc-review)
   scripts/run-local.sh --scaffold-only       write /tmp files, print the in-session call, then stop
 
-Requires: claude, tsx, git on PATH (gh only for --pr mode).
+Requires: claude, tsx, git on PATH (tsx runs the prefetch verb in every mode; gh only for --pr mode).
 USAGE
 }
 
@@ -72,6 +72,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 command -v git >/dev/null  || die "git not on PATH"
+# tsx now runs the prefetch verb below in EVERY mode (it assembles the review context the brain relays),
+# not only --pr — so require it unconditionally (it was effectively optional before, used best-effort).
+command -v tsx >/dev/null  || die "tsx not on PATH"
 [[ -f "$SCRIPT" ]]         || die "workflow not found: $SCRIPT"
 
 # ---- assemble the diff into /tmp/pr-diff.txt --------------------------------
@@ -110,6 +113,15 @@ JSON
 DIFF_LINES=$(wc -l < /tmp/pr-diff.txt | tr -d ' ')
 printf 'scaffolded: mode=%s repo=%s pr=%s diff=%s lines  ->  /tmp/cc-input.json, /tmp/pr-diff.txt\n' \
   "$MODE" "${REPO:-(none)}" "$PR_NUMBER" "$DIFF_LINES"
+
+# Assemble the review context deterministically (reshape Phase 1) into /tmp/cc-ctx.json — the brain's
+# fetch agent relays that file verbatim (the Workflow runtime has no fs access). --local (PR_NUMBER 0)
+# shapes it from the prefetched diff; --pr does real platform context/threads/get-overview calls.
+if [[ "$PR_NUMBER" -gt 0 ]]; then
+  tsx "${BOT}/scripts/review-platform.ts" prefetch --pr "$PR_NUMBER" --bot-login "cc-review[bot]" > /tmp/cc-ctx.json
+else
+  tsx "${BOT}/scripts/review-platform.ts" prefetch --local > /tmp/cc-ctx.json
+fi
 
 # In --pr mode we also pass the expected target as args, which engages the identity
 # gate: if the fetch fails to resolve PR #N, the workflow aborts instead of reviewing

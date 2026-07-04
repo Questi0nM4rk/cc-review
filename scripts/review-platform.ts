@@ -31,6 +31,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { classifyPosted } from "./posted.mjs";
 import { isBotThread } from "./threads.mjs";
+import { assembleCtx, parseReviewConfig, abortCtx } from "./prefetch.mjs";
 
 // Hidden marker on the bot's overview comment. It doubles as the per-PR "already reviewed"
 // state flag (SPEC §4): get-overview matches it, and the brain embeds it in the overview body.
@@ -52,9 +53,25 @@ function out(obj: unknown): never {
   process.exit(0);
 }
 
+// A library function must not process.exit — the `prefetch` verb needs to CATCH a platform failure and
+// emit the abort shape instead of exiting 1. So die() throws; main() catches AdapterError at the CLI
+// boundary and preserves the exact external contract (error JSON on stdout + exit 1) for every verb
+// that isn't prefetch. Behavior-preserving for all existing callers.
+class AdapterError extends Error {
+  detail: string;
+  constructor(message: string, detail = "") { super(message); this.detail = detail; }
+}
+
 function die(message: string, detail?: string): never {
-  process.stdout.write(JSON.stringify({ error: message, detail: detail ?? "" }));
-  process.exit(1);
+  throw new AdapterError(message, detail ?? "");
+}
+
+function readJsonFile(path: string): any {
+  try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
+}
+
+function readTextFile(path: string): string {
+  try { return readFileSync(path, "utf8"); } catch { return ""; }
 }
 
 function flag(name: string): string | undefined {
@@ -453,20 +470,79 @@ const gl = {
 };
 
 // --------------------------------------------------------------------------- //
+// prefetch — assemble the WHOLE review context deterministically (reshape Phase 1)
+// --------------------------------------------------------------------------- //
+//
+// The brain's fetch is now a single relay agent that cats one file and returns it verbatim; ALL
+// assembly lives here. This verb reads the runner-owned inputs (/tmp/cc-input.json, /tmp/cc-user-msg.txt),
+// the repo config (.cc-review.yaml), and the prior review-state marker, calls the existing
+// context/threads/get-overview internals, and prints the FETCH_SCHEMA-shaped JSON. Any platform
+// failure → the abort shape (pr_number 0, empty diff) so the brain aborts instead of reviewing a
+// fallback diff — never fabricate. Pure shaping is in prefetch.mjs (unit-tested); this only wires I/O.
+function prefetch(): never {
+  const botLogin = flag("bot-login") || "cc-review[bot]";
+  const memDir = flag("mem-dir") || ".cc-memory";
+  const local = process.argv.includes("--local");
+  const input = readJsonFile("/tmp/cc-input.json") ?? {};
+  const userMessage = readTextFile("/tmp/cc-user-msg.txt");
+  const config = parseReviewConfig(readTextFile(".cc-review.yaml"));
+  const prNum = Number(flag("pr") ?? input.pr_number ?? 0);
+
+  // Local dry-run (explicit --local, or no positive PR): diff from the prefetched file, repo
+  // best-effort from detect(), no remote calls. detect() dies on a non-git dir — tolerate it.
+  if (local || !(prNum > 0)) {
+    const diff = prefetchedDiff() ?? "";
+    let repo = "";
+    try { repo = detect().repo; } catch { /* leave "" — local mode tolerates an unknown repo */ }
+    return out(assembleCtx({ local: true, input, config, userMessage, diff, repo, reviewState: null }));
+  }
+
+  // Platform mode: any failure (adapter error, PR not found, no auth) → the abort shape.
+  try {
+    const d = detect();
+    const pr = String(prNum);
+    const context = d.platform === "github" ? gh.context(d.repo, pr) : gl.context(d.repo, pr);
+    const threads = d.platform === "github" ? gh.threads(d.repo, pr, botLogin) : gl.threads(d.repo, pr, botLogin);
+    const overview = d.platform === "github" ? gh.getOverview(d.repo, pr) : gl.getOverview(d.repo, pr);
+    const reviewState = readJsonFile(`${memDir}/pr-${prNum}/review-state.json`);
+    return out(assembleCtx({ input, config, userMessage, context, threads, overview, reviewState }));
+  } catch {
+    return out(abortCtx("prefetch platform failure"));
+  }
+}
+
+// --------------------------------------------------------------------------- //
 // dispatch
 // --------------------------------------------------------------------------- //
 
 function main() {
   const verb = process.argv[2];
   if (!verb || verb === "--help" || verb === "-h") {
-    process.stdout.write("verbs: detect | context | threads | get-overview | post-overview | edit-overview | post-review | resolve | reply | verify-posted\n");
+    process.stdout.write("verbs: detect | context | threads | get-overview | prefetch | post-overview | edit-overview | post-review | resolve | reply | verify-posted\n");
     process.exit(verb ? 0 : 1);
   }
 
+  // prefetch does its own tolerant detect() (local mode must survive a non-git dir), so it runs
+  // BEFORE the unconditional detect() below.
+  if (verb === "prefetch") return prefetch();
+
+  try {
+    return dispatch(verb);
+  } catch (e) {
+    // Preserve the exact pre-refactor CLI contract: an adapter failure = error JSON on stdout + exit 1.
+    if (e instanceof AdapterError) {
+      process.stdout.write(JSON.stringify({ error: e.message, detail: e.detail }));
+      process.exit(1);
+    }
+    throw e;
+  }
+}
+
+function dispatch(verb: string): never {
   const d = detect();
 
-  // Each handler calls out()/die() (both `: never`, both process.exit). Explicit
-  // `return` makes the no-fallthrough contract obvious — this is a dispatch table.
+  // Each handler calls out()/die() (both `: never`). Explicit `return` makes the
+  // no-fallthrough contract obvious — this is a dispatch table.
   switch (verb) {
     case "detect":
       return out(d);

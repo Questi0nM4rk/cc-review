@@ -117,7 +117,8 @@ agent silently dropped every deduped finding, and with zero open threads that po
 exact #75 failure, but inside the brain). Aborting sends the runner gate red instead.
 
 - Sub-agents do **not** inherit env vars, so inputs arrive via files the runner stages
-  (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`). The brain **writes under the
+  (`/tmp/cc-input.json`, `/tmp/cc-user-msg.txt`, `/tmp/pr-diff.txt`, and — reshape Phase 1 —
+  `/tmp/cc-ctx.json`, the whole assembled review context the fetch agent relays verbatim). The brain **writes under the
   workspace** (`.cc-memory/`, `.cc-run/`; the read-only `.cc-global/` is staged there too) with `cat`
   heredocs into **pre-created** dirs — a convention proven in the old headless/allowlist era and
   **retained across the interactive/agentapi switch** (harmless and robust; interactive + `--permission-mode auto`
@@ -175,7 +176,7 @@ significant re-run then re-posts the overview.
 
 | # | Phase | Model · effort | Gate | Output |
 |---|-------|----------------|------|--------|
-| 1 | **Fetch** — diff + PR meta + prior threads via `review-platform.ts` | sonnet | always | context |
+| 1 | **Fetch** — the runner's `prefetch` verb (`review-platform.ts`) assembles diff + PR meta + prior threads + config + review-state marker to `/tmp/cc-ctx.json`; the agent relays that file **verbatim** (`args.ctx_path`) | sonnet | always | context |
 | 2 | **Holistic review** — reads the **diff only**; emits overview walkthrough (prose + one mermaid diagram to `docs/overview-diagram-standard.md`), **difficulty 1–5**, and detects `answer`-intent. **Posts the overview first** (with the marker). | opus · medium (sonnet on doc-only) | always | overview, difficulty |
 | 3 | **Gather** (parallel) — see §6 | sonnet ×2 + haiku | difficulty ≥ 2 (web ×2 skipped on small, non-risky diffs) | observations + signals |
 | 4 | **Squad** — difficulty-scaled count + model + domain (§8); each reviewer gets overview + routed observations + tool signals + memories | opus·xhigh + sonnet | reviewing | findings |
@@ -334,11 +335,14 @@ via `--add-dir` (`run-gitlab.sh`). It is purely local/per-machine — **local an
 (slice fetch/push, `_global/` staging, identity) are already separated at the *runner* layer
 (`ci-run.sh` does them; `run-gitlab.sh` does not), not in the brain.
 
-**Runner + identity args (defaults keep CI unchanged).** Two more injected values: `args.runner` — the
+**Runner + identity args (defaults keep CI unchanged).** Three more injected values: `args.runner` — the
 command that runs the adapter/tool TS scripts, defaulting to `tsx` (CI has it on PATH; an in-session run
-passes e.g. `bun x tsx`, since `tsx` isn't installed on dev machines) — and `args.bot_login` — the posting
-identity, defaulting to `cc-review[bot]` (the App; an in-session run passes the human account). The fetch
-prompt's `threads` call and the `verify-posted` call both pass `--bot-login`. **The `threads` verb returns
+passes e.g. `bun x tsx`, since `tsx` isn't installed on dev machines) — `args.bot_login` — the posting
+identity, defaulting to `cc-review[bot]` (the App; an in-session run passes the human account) — and
+`args.ctx_path` — where the runner's `prefetch` verb writes the assembled review context, defaulting to
+`/tmp/cc-ctx.json` (the fetch agent relays that file verbatim; the Workflow runtime has no fs access, so
+assembly can't live in the brain). The `prefetch` verb (which now runs the `threads` call) and the
+`verify-posted` call both pass `--bot-login`. **The `threads` verb returns
 ONLY bot-owned threads** — first comment author == the bot login, OR the body carries the
 `<!-- cc-review:finding` marker — and `verify-posted` honors the same flag. **WHY:** the brain resolves and
 replies to the threads `threads` returns; a human reviewer's thread must never be touched, must never gate
