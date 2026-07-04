@@ -84,6 +84,8 @@ Two entry paths, decided by whether **our overview comment** (marker `<!-- cc-re
 - **Live, WITHOUT merging a consumer's main:** `gh workflow run cc-review.yml --repo <consumer> --ref <branch> -f pr_number=N` — runs the workflow *from a branch* on real Actions. This is how GHA changes get verified before merge.
 - **Memory write** can't be reproduced locally (no sandbox locally) — verify it via the `--ref` dispatch and check the `claude-reviewer/memory` branch.
 - **Syntax:** the brain uses top-level `return` (the Workflow runtime wraps the body), so `node --check` rejects it raw — wrap in `async function __wf(){ … }` first, then `node --check`.
+- **Orchestration flow:** `scripts/flow-harness.test.mjs` wraps the FULL brain in an async function with stubbed `agent`/`parallel`/`phase`/`log`/`args` (label-routed, schema-shaped canned results)
+  and unit-tests the path logic below the helpers sentinel — first/rerun/blocked/answer routing, fail-closed aborts, post/verify retry, ignore+confidence gates (reshape plan Phase 0).
 
 ## State of the world (2026-06-18) — bot is LIVE on CI via interactive claude (agentapi)
 

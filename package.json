@@ -6,6 +6,6 @@
   "description": "Strict, zero-tolerance PR/MR review bot powered by Claude Code.",
   "license": "UNLICENSED",
   "scripts": {
-    "test": "node scripts/check-brain.mjs && node --test scripts/helpers.test.mjs && node scripts/verify-gate.test.mjs && node --test scripts/web-search.test.ts && node --test scripts/threads.test.mjs"
+    "test": "node scripts/check-brain.mjs && node --test scripts/helpers.test.mjs && node --test scripts/flow-harness.test.mjs && node scripts/verify-gate.test.mjs && node --test scripts/web-search.test.ts && node --test scripts/threads.test.mjs"
   }
 }
