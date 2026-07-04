@@ -147,10 +147,15 @@ CLAUDE.md-in-gather — tracked as later candidates, not this reshape.
   - [x] PR + merge (#85, admin-squash)
 - [ ] Implementer-subagent improvement pass in qsm-marketplace2 (brain/subagent/implementer;
       evidence file: /tmp/cc-review-implementer-observations.md)
-- [ ] Phase 3 — squad reshape (correctness anchor; check at every depth; MERGE THE TWO
-      WEBSEARCH AGENTS into one; intent folded into holistic; batched comment-mgmt;
-      cheap re-runs). Codex is OFF (usage limits) — implement with Claude subagents.
-      Phase 3 and Phase 4 touch disjoint files → run them in PARALLEL worktrees.
+- [x] Phase 3 — squad reshape (#86, merged 47818a2, 2026-07-04): correctness anchor
+      (2 independent at d5); check at every depth (sonnet d1, opus d2+, 2 intersecting
+      votes at d5, fail-closed); websearch agents merged; intent folded into holistic
+      (answer mode still precedes the blocked gate); comment-mgmt batched (hallucinated-id
+      guard); review-state persists difficulty/category, prefilter-before-holistic skips
+      holistic on non-significant message-less re-runs (blocked = zero agents after fetch).
+      Verified: 258 tests, dogfood smoke d3 first = 8 agent calls dry-run (~10 posted,
+      census was ~14). Implemented via 3 sequential implementer subagents + orchestrator
+      review (1 spec deviation caught+reverted in P3.1-adjacent work; meta block updated).
 - [ ] Phase 4 — in-session entry + memory glue (per plan section above)
 - [ ] End-of-campaign docs overhaul: prune/rewrite SPEC.md, CLAUDE.md, README, docs/* to
       the as-built reality (most docs expected to shrink or go); fold plan amendments into
