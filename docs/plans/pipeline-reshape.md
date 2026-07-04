@@ -102,8 +102,13 @@ the run; second run takes the rerun path.
 ## Verification ladder (every phase)
 
 npm test (incl. mock harness) → in-session dogfood dry-run of the brain on the
-phase's own diff → live `gh workflow run cc-review.yml --ref <branch>` dispatch on a
-consumer PR for CI-touching phases → merge to main (the live brain).
+phase's own diff → merge to main (the live brain).
+
+**Live verification is deferred (user decision, 2026-07-04): NO live runs — no consumer
+dispatches, no `@cc-review` pings — until the whole reshape has landed and been reviewed
+end-to-end. Then ONE live pass validates the full pipeline before the bot is considered
+current again. Until that pass, treat main's CI path as unverified-live; failures there
+are loud (abort shapes + gate red), never silent wrong verdicts.**
 
 ## Non-goals
 
