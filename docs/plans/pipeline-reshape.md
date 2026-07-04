@@ -135,19 +135,41 @@ CLAUDE.md-in-gather — tracked as later candidates, not this reshape.
     (Codex P2 fix); the diff NEVER flows through an LLM — prefetch writes it to disk,
     ctx carries a 20k excerpt + exact diff_files/added_line_count, prompts point agents
     at the file (dogfood-caught truncation bug, pre-dated the reshape)
-  - [ ] minimal dogfood smoke green (running)
-  - [ ] final Codex review on settled tree
-  - [ ] PR + merge
+  - [ ] minimal dogfood smoke green (one-file diff recipe below; a run may already have
+        finished — check before re-spending)
+  - [ ] final review of the settled tree (Codex is OFF — usage limits; use the session's
+        /code-review or a fresh-eyes subagent pass)
+  - [ ] PR + merge (standing admin-squash-merge for phase PRs when gates are green)
 - [ ] Implementer-subagent improvement pass in qsm-marketplace2 (brain/subagent/implementer;
-      evidence: session scratchpad implementer-observations.md — stall, idle-no-report x2,
-      shutdown-protocol failure, no-commit contract collision, hook-noise clause,
-      tagen-fetch optics + brain/** write-guard idea, unnamed-subagent contract)
-- [ ] Phase 3 — squad reshape on the optimized pipeline (correctness anchor; check at every
-      depth; MERGE THE TWO WEBSEARCH AGENTS into one; intent folded into holistic; batched
-      comment-mgmt; cheap re-runs). Implementation switches to Codex gpt-5.5 --effort xhigh
-      via codex-companion task --background --write, implementer method via tagen get.
+      evidence file: /tmp/cc-review-implementer-observations.md)
+- [ ] Phase 3 — squad reshape (correctness anchor; check at every depth; MERGE THE TWO
+      WEBSEARCH AGENTS into one; intent folded into holistic; batched comment-mgmt;
+      cheap re-runs). Codex is OFF (usage limits) — implement with Claude subagents.
+      Phase 3 and Phase 4 touch disjoint files → run them in PARALLEL worktrees.
 - [ ] Phase 4 — in-session entry + memory glue (per plan section above)
 - [ ] End-of-campaign docs overhaul: prune/rewrite SPEC.md, CLAUDE.md, README, docs/* to
       the as-built reality (most docs expected to shrink or go); fold plan amendments into
       SPEC; then close this plan
 - [ ] ONE live verification pass (user gate — nothing live before this)
+
+## Operating notes (what this campaign established — keep applying)
+
+- **Verification tiers catch disjoint bug classes.** The mock harness (flow logic), the
+  in-session dogfood (runtime physics: tool-result caps, real file reads), and an external
+  review pass (integration regressions across module seams) each caught bugs the other two
+  could not. Never collapse the ladder; DO scope it — plumbing changes get a one-file smoke
+  (small diff → low difficulty → few agents), only behavior changes warrant full-size dogfoods.
+- **Nothing large may flow through an agent verbatim.** Tool results truncate (~25k tokens);
+  an LLM cannot relay bytes it cannot see. Big payloads go on disk; agents get the path;
+  exact facts (file lists, counts) are precomputed in runner code.
+- **Abort-shape examples in prompts leak into behavior.** If an example value (pr_number:0)
+  can be confused with a legitimate value, say explicitly which is which.
+- **Dispatch discipline:** unnamed background subagents (result returns structurally,
+  self-terminating); one bounded deliverable per dispatch (split big tasks); a 5-minute
+  worktree watchdog; first-file-edit-early working contract in every prompt; >3 fixes go
+  to an implementer, fewer are orchestrator-inline.
+- **Smoke recipe (local, posts nothing):** write a small diff to /tmp/pr-diff.txt, write
+  /tmp/cc-input.json with pr_number 0 / post false, run
+  `bun x tsx scripts/review-platform.ts prefetch --local > /tmp/cc-ctx.json`, then invoke
+  the Workflow tool on .claude/workflows/strict-review.mjs with
+  args {bot_dir: <worktree>, runner: "bun x tsx"}. Gate: `npm test` + `bash -n` entry scripts.
