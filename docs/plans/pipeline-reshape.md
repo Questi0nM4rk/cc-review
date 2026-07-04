@@ -122,3 +122,32 @@ CLAUDE.md-in-gather — tracked as later candidates, not this reshape.
   inline)
 - Does backfill-memory.mjs adopt the same runner-prefetch split in Phase 1 or stay
   as-is until it hurts?
+
+## Campaign tracker (single action-item list; updated by the orchestrator, not agents)
+
+- [x] Phase 0 — mock-agent flow harness (#83, merged)
+- [x] Phase 1 — runner prefetch + verbatim relay (#84, merged; as-built amendment above)
+- [ ] Phase 2 — runner-side post module (branch feat/post-module, code complete, in close-out)
+  - as-built (docs frozen until the end-of-campaign pass; recorded here so nothing is lost):
+    overview post STAYS in the brain (mid-run walkthrough UX); brain returns a post_run
+    block, runner executes it (post-run.mjs + post-run verb); findings.jsonl is APPEND
+    (Codex P2 fix); nag dedup writes nag:"skipped-duplicate" and gate.mjs accepts it
+    (Codex P2 fix); the diff NEVER flows through an LLM — prefetch writes it to disk,
+    ctx carries a 20k excerpt + exact diff_files/added_line_count, prompts point agents
+    at the file (dogfood-caught truncation bug, pre-dated the reshape)
+  - [ ] minimal dogfood smoke green (running)
+  - [ ] final Codex review on settled tree
+  - [ ] PR + merge
+- [ ] Implementer-subagent improvement pass in qsm-marketplace2 (brain/subagent/implementer;
+      evidence: session scratchpad implementer-observations.md — stall, idle-no-report x2,
+      shutdown-protocol failure, no-commit contract collision, hook-noise clause,
+      tagen-fetch optics + brain/** write-guard idea, unnamed-subagent contract)
+- [ ] Phase 3 — squad reshape on the optimized pipeline (correctness anchor; check at every
+      depth; MERGE THE TWO WEBSEARCH AGENTS into one; intent folded into holistic; batched
+      comment-mgmt; cheap re-runs). Implementation switches to Codex gpt-5.5 --effort xhigh
+      via codex-companion task --background --write, implementer method via tagen get.
+- [ ] Phase 4 — in-session entry + memory glue (per plan section above)
+- [ ] End-of-campaign docs overhaul: prune/rewrite SPEC.md, CLAUDE.md, README, docs/* to
+      the as-built reality (most docs expected to shrink or go); fold plan amendments into
+      SPEC; then close this plan
+- [ ] ONE live verification pass (user gate — nothing live before this)
