@@ -57,22 +57,47 @@ const SMALL_DIFF = [
   " export { x };",
 ].join("\n");
 
-const baseFetch = (o = {}) => ({
-  diff: SMALL_DIFF,
-  pr_number: 42,
-  repo: "o/r",
-  platform: "github",
-  head_sha: "deadbeef",
-  reviewed_file_count: null,
-  reviewed_head_sha: "",
-  user_message: "",
-  post: false,
-  ping_override: false,
-  overview_id: null,
-  config: {},
-  threads: [],
-  ...o,
-});
+// Mirror the brain's changedFiles / addedLineCount so a fixture's precomputed ctx fields stay in parity
+// with whatever `diff` a scenario supplies (the prefetch verb computes these over the FULL diff; here we
+// compute them over the fixture diff, which is small enough to equal the excerpt).
+const ctxFilesOf = (diff) => {
+  const s = new Set();
+  for (const m of String(diff).matchAll(/^\+\+\+ b\/(.+)$/gm)) s.add(m[1]);
+  for (const m of String(diff).matchAll(/^diff --git a\/.+ b\/(.+)$/gm)) s.add(m[1]);
+  return [...s];
+};
+const ctxAddedOf = (diff) => {
+  let n = 0;
+  for (const _m of String(diff).matchAll(/^\+(?!\+\+ )/gm)) n++;
+  return n;
+};
+
+const baseFetch = (o = {}) => {
+  const diff = o.diff !== undefined ? o.diff : SMALL_DIFF;
+  return {
+    diff,
+    // Reshape Phase 2 fix: the ctx carries the FULL diff on disk + a bounded excerpt inline, plus these
+    // exact precomputed fields. The brain reads diff_files / added_line_count instead of re-parsing the
+    // (possibly truncated) excerpt. A scenario can override any of them via `o`.
+    diff_path: "/tmp/pr-diff.txt",
+    diff_truncated: false,
+    diff_files: ctxFilesOf(diff),
+    added_line_count: ctxAddedOf(diff),
+    pr_number: 42,
+    repo: "o/r",
+    platform: "github",
+    head_sha: "deadbeef",
+    reviewed_file_count: null,
+    reviewed_head_sha: "",
+    user_message: "",
+    post: false,
+    ping_override: false,
+    overview_id: null,
+    config: {},
+    threads: [],
+    ...o,
+  };
+};
 
 const baseThread = (o = {}) => ({
   id: "T1",
@@ -99,15 +124,19 @@ const DEFAULTS = {
   check: { graded: [] },
   "thread:": { thread_id: "T1", action: "keep", reason: "still valid" },
   "sig-change": { significant: false, reason: "minor" },
-  "post-answer": null,
+  // Reshape Phase 2: the ONLY posting agent left in the brain is the mid-run overview post/edit.
+  // post-answer / post-gate(nag) / thread-ops / post-review / verify-posted / post-ops are GONE —
+  // they moved to the runner's post-run step. A scenario asserting any of those labels fires MUST fail.
   "post-overview": null,
   "edit-overview": null,
-  "post-gate": null,
-  "thread-ops": null,
-  "post-review": { posted: true },
-  "verify-posted": { landed: true },
-  "post-ops": null,
   memory: "memory written",
+};
+
+// Labels that must NEVER appear in the brain's agent calls after the Phase-2 reshape (posting moved to
+// the runner). Any post-path scenario asserts this set stays empty.
+const POST_AGENT_LABELS = ["post-answer", "post-gate", "thread-ops", "post-review", "verify-posted", "post-ops"];
+const assertNoPostAgents = (calls) => {
+  for (const l of POST_AGENT_LABELS) assert.equal(has(calls, l), false, `brain must not call the '${l}' agent — posting is runner-side now`);
 };
 
 // Resolve a value from a prefix-map: exact match or longest startsWith match wins.
@@ -168,8 +197,9 @@ test("scenario 1: local dry-run first review runs fetch->holistic->gather->squad
   assert.equal(result.localDryRun, true);
   assert.equal(result.event, "REQUEST_CHANGES");
   assert.equal(result.totals.confirmed, 1);
-  assert.equal(has(calls, "post-review"), false, "must not post when post=false");
+  assertNoPostAgents(calls); // posting is runner-side; a dry-run assembles nothing to post
   assert.equal(has(calls, "post-overview"), false, "must not post the overview when post=false");
+  assert.equal(result.post_run, null, "post=false -> post_run is null (nothing for the runner to post)");
   assert.ok(logs.some((l) => /skipping web research/.test(l)), "small non-risky diff skips web research");
 });
 
@@ -244,9 +274,9 @@ test("scenario 5: fetch resolving PR #9 when #7 was requested aborts", async () 
 // ---------------------------------------------------------------------------
 // Scenario 6 — answer mode (a maintainer question)
 // ---------------------------------------------------------------------------
-test("scenario 6: a maintainer question is answered and stops (post=false -> no post-answer)", async () => {
+test("scenario 6: a maintainer question is answered and stops; NO posting agent, post_run null, answer carried", async () => {
   const { result, calls } = await run({
-    fetch: baseFetch({ pr_number: 0, repo: "", post: false, user_message: "Why did you rename foo?" }),
+    fetch: baseFetch({ pr_number: 42, repo: "o/r", post: true, user_message: "Why did you rename foo?" }),
     agents: {
       intent: { is_question: true, answer: "Because foo shadowed a builtin." },
     },
@@ -255,18 +285,19 @@ test("scenario 6: a maintainer question is answered and stops (post=false -> no 
   assert.equal(result.ok, true);
   assert.equal(result.mode, "answer");
   assert.equal(result.answer, "Because foo shadowed a builtin.");
-  assert.equal(result.posted, false);
-  assert.equal(has(calls, "post-answer"), false, "no post-answer when post=false");
+  assert.equal(result.post, true, "the answer carries the post flag for the runner");
+  assert.equal(result.post_run, null, "answer is comment-only — post_run is null");
+  assertNoPostAgents(calls); // the runner posts the answer via post-overview, not a brain agent
   assert.equal(has(calls, "review:"), false, "answer mode never runs the squad");
 });
 
 // ---------------------------------------------------------------------------
 // Scenario 7 — re-run blocked: prior threads unanswered, no ping
 // ---------------------------------------------------------------------------
-test("scenario 7: a re-run with unanswered threads and no ping is blocked before the squad", async () => {
+test("scenario 7: a re-run with unanswered threads and no ping is blocked before the squad; block_reason set, no posting agent", async () => {
   const { result, calls } = await run({
     fetch: baseFetch({
-      pr_number: 0, repo: "", post: false,
+      pr_number: 42, repo: "o/r", post: true,
       overview_id: 123, // marker present -> re-run path
       ping_override: false,
       threads: [baseThread({ id: "T1", author_replied: false })],
@@ -276,9 +307,12 @@ test("scenario 7: a re-run with unanswered threads and no ping is blocked before
   assert.equal(result.ok, true);
   assert.equal(result.mode, "rerun-blocked");
   assert.equal(result.openThreads, 1);
+  assert.match(result.block_reason, /finish the previous review/i, "the nag body the runner posts is carried");
+  assert.equal(result.post, true, "the block carries the post flag for the runner");
+  assert.equal(result.post_run, null, "rerun-blocked posts a nag comment, not a review — post_run is null");
   assert.equal(has(calls, "review:"), false, "the squad must not run while the review is blocked");
   assert.equal(has(calls, "holistic"), false, "holistic must not run while blocked");
-  assert.equal(has(calls, "post-gate"), false, "no gate comment posted when post=false");
+  assertNoPostAgents(calls); // the runner posts the nag via post-overview (marker-deduped), not a brain agent
 });
 
 // ---------------------------------------------------------------------------
@@ -307,27 +341,101 @@ test("scenario 8: a re-run with all threads answered runs comment-mgmt, holistic
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 9 — posted first review with a verify retry
+// Scenario 9 — posted first review: NO posting agents, overview posted mid-run,
+// and the post_run handoff block carries the full deterministic contract.
+// (This is the new load-bearing contract — the runner's post-run step consumes it.)
 // ---------------------------------------------------------------------------
-test("scenario 9: a posted first review retries post-review until verify lands", async () => {
+test("scenario 9: a posted first review posts NO review agent, posts the overview mid-run, and hands the runner a complete post_run block", async () => {
+  const f = finding(); // in_diff:true -> becomes an inline finding -> a finding_row + a payload marker
   const { result, calls } = await run({
-    fetch: baseFetch({ pr_number: 42, repo: "o/r", platform: "github", post: true }),
+    fetch: baseFetch({ pr_number: 42, repo: "o/r", platform: "github", head_sha: "deadbeef", post: true }),
+    args: { mem_dir: "/mem", bot_login: "cc-review[bot]" },
     agents: {
       holistic: { category: "other", difficulty: 3, overview_markdown: "## Overview\n\nAdds y.\n" },
-      "review:": { findings: [finding()] },
-      check: { graded: [graded(finding())] },
-      "post-review": { posted: true },
-      // first verify (attempt 1) reports nothing landed; the retry's verify (attempt 2) lands.
-      "verify-posted": (_p, o) => ({ landed: o.label !== "verify-posted:1" }),
+      "review:": { findings: [f] },
+      check: { graded: [graded(f)] },
     },
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.postLanded, true);
-  assert.equal(count(calls, "post-review"), 2, "initial post + exactly one retry");
-  assert.ok(count(calls, "thread-ops") <= 1, "thread-ops runs at most once");
-  assert.equal(count(calls, "thread-ops"), 0, "no thread-ops on a first review with no prior threads");
-  assert.equal(count(calls, "post-ops"), 1, "post-ops writes the run-output files once after verify success");
+  assert.equal(result.mode, "first");
+  // The overview IS still posted mid-run (walkthrough-first UX; the deliberate Phase-2 deviation).
+  assert.equal(has(calls, "post-overview"), true, "the overview is posted mid-run on a first review with post=true");
+  assert.equal(has(calls, "edit-overview"), false, "a first review posts, never edits");
+  // NO posting agents remain in the brain.
+  assertNoPostAgents(calls);
+
+  // The post_run block is shaped EXACTLY as executePostRun's ctx.
+  const pr = result.post_run;
+  assert.ok(pr && typeof pr === "object", "post_run is present when post=true");
+  assert.equal(pr.pr_number, 42);
+  assert.equal(pr.repo, "o/r");
+  assert.equal(pr.platform, "github");
+  assert.equal(pr.head_sha, "deadbeef");
+  assert.equal(pr.bot_login, "cc-review[bot]");
+  assert.equal(pr.mem_dir, "/mem");
+  assert.deepEqual(pr.replies, [], "no prior threads on a first review -> no replies");
+  assert.deepEqual(pr.resolve_ids, [], "no prior threads on a first review -> no resolves");
+  // payload is the SAME object the result exposes (event + body + comments + integrity marker).
+  assert.deepEqual(pr.payload, result.payload);
+  assert.equal(pr.payload.event, "REQUEST_CHANGES");
+
+  // review_state is the EXACT bytes post-run.mjs overwrites: { reviewed_head_sha, reviewed_file_count, event, files }.
+  const state = JSON.parse(pr.review_state);
+  assert.equal(state.reviewed_head_sha, "deadbeef");
+  assert.equal(state.reviewed_file_count, 1, "one changed file in SMALL_DIFF");
+  assert.equal(state.event, "REQUEST_CHANGES");
+  assert.deepEqual(state.files, ["src/a.ts"]);
+
+  // finding_rows: one row per inline finding, each id matching the hidden marker in the payload comment.
+  assert.equal(pr.finding_rows.length, 1, "one inline finding -> one finding_row");
+  const row = pr.finding_rows[0];
+  assert.equal(row.file, "src/a.ts");
+  assert.equal(row.posted_head_sha, "deadbeef");
+  assert.equal(row.event, "REQUEST_CHANGES");
+  // The load-bearing correlation: the finding_row id is embedded as the payload comment's marker id.
+  const markerBodies = pr.payload.comments.map((c) => c.body).join("\n");
+  assert.ok(markerBodies.includes(`<!-- cc-review:finding ${row.id} -->`), "the finding_row id matches the payload marker id");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 9b — posted re-run: post_run carries replies + resolve_ids, mapped to
+// post-run.mjs's { thread, comment_id, body } reply shape.
+// ---------------------------------------------------------------------------
+test("scenario 9b: a posted re-run maps comment-mgmt actions into the post_run replies + resolve_ids", async () => {
+  const { result, calls } = await run({
+    fetch: baseFetch({
+      pr_number: 42, repo: "o/r", platform: "github", head_sha: "cafef00d", post: true,
+      overview_id: 123,
+      threads: [
+        baseThread({ id: "T1", line: 2, author_replied: true, comment_db_id: 900 }),
+        baseThread({ id: "T2", line: 5, author_replied: true, comment_db_id: 901 }),
+      ],
+    }),
+    args: { mem_dir: "/mem" },
+    agents: {
+      // T1 -> resolve (carries a Fixed: message -> a reply too); T2 -> reply (still wrong).
+      "thread:src/a.ts:2": { thread_id: "T1", action: "resolve", reason: "fixed", reply_body: "Fixed: removed y" },
+      "thread:src/a.ts:5": { thread_id: "T2", action: "reply", reason: "still wrong", reply_body: "Still unused" },
+      "review:": { findings: [] }, // APPROVE-able findings; the re-run still runs the squad
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "rerun");
+  assertNoPostAgents(calls);
+
+  const pr = result.post_run;
+  assert.ok(pr, "post_run present on a posted re-run");
+  assert.deepEqual(pr.resolve_ids, ["T1"], "the resolve action's thread id");
+  // Both a resolve (with a message) and a reply become replies, mapped to post-run.mjs's shape.
+  const byThread = Object.fromEntries(pr.replies.map((r) => [r.thread, r]));
+  assert.deepEqual(byThread.T1, { thread: "T1", comment_id: 900, body: "Fixed: removed y" });
+  assert.deepEqual(byThread.T2, { thread: "T2", comment_id: 901, body: "Still unused" });
+  // With no prior review-state marker, the sig-change prefilter treats this re-run as significant, so the
+  // overview is EDITED in place (not posted new). Either way the overview edit is the only posting agent.
+  assert.equal(has(calls, "edit-overview"), true, "a significant re-run edits the overview in place");
+  assert.equal(has(calls, "post-overview"), false, "an existing overview is edited, never re-posted");
 });
 
 // ---------------------------------------------------------------------------
@@ -394,7 +502,7 @@ test("scenario 11: a confirmed-but-low-confidence finding is dropped from the pa
 // ---------------------------------------------------------------------------
 // Scenario 12 — empty overview guard: post=true but holistic returns ""
 // ---------------------------------------------------------------------------
-test("scenario 12: an empty holistic overview is never posted, but the run still completes", async () => {
+test("scenario 12: an empty holistic overview is never posted, but the run still completes with a post_run block", async () => {
   const { result, calls } = await run({
     fetch: baseFetch({ pr_number: 42, repo: "o/r", platform: "github", post: true }),
     agents: {
@@ -406,5 +514,84 @@ test("scenario 12: an empty holistic overview is never posted, but the run still
   assert.equal(result.ok, true);
   assert.equal(result.overview, "", "the overview is empty");
   assert.equal(has(calls, "post-overview"), false, "an empty overview marker is never posted");
-  assert.equal(result.postLanded, true, "the (empty-overview) run still posts its verdict");
+  assertNoPostAgents(calls);
+  // The verdict still flows to the runner via post_run (APPROVE payload); the runner posts it.
+  assert.ok(result.post_run, "the (empty-overview) run still hands the runner a post_run block");
+  assert.equal(result.post_run.payload.event, "APPROVE", "no findings -> APPROVE verdict for the runner to post");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 13 — the ctx's precomputed diff_files drives files (langs, squad) even when the
+// inline `diff` is only a truncated excerpt that no longer contains the file headers.
+// This is the core of the fix: the file list comes from the ctx, not from re-parsing the excerpt.
+// ---------------------------------------------------------------------------
+test("scenario 13: ctx.diff_files drives files/langs even when the diff is a header-less excerpt", async () => {
+  // A mid-hunk excerpt: no `+++ b/…` or `diff --git` headers → changedFiles(excerpt) === [].
+  const EXCERPT = "@@ -10,3 +10,4 @@\n const keep = 1;\n+const added = 2;\n export { keep };\n";
+  const { result, logs } = await run({
+    fetch: baseFetch({
+      pr_number: 0, repo: "", post: false,
+      diff: EXCERPT,
+      diff_truncated: true,
+      diff_files: ["src/a.ts", "src/b.ts", "src/c.ts"], // exact, from the FULL diff on disk
+      added_line_count: 120, // over the FULL diff → enough that web research is NOT skipped
+    }),
+    agents: {
+      holistic: { category: "other", difficulty: 3, overview_markdown: "x" },
+      "review:": { findings: [] }, // clean → APPROVE
+    },
+  });
+
+  assert.equal(result.ok, true);
+  // The startup log reports the file count + langs derived from ctx.diff_files, not the empty excerpt.
+  const startup = logs.find((l) => /files, langs=/.test(l));
+  assert.ok(startup, "the startup log line is present");
+  assert.match(startup, /3 files/, "files.length comes from ctx.diff_files (3), not the header-less excerpt (0)");
+  assert.match(startup, /langs=\[typescript\]/, "langs are derived from the ctx file list");
+  // added_line_count from the ctx (120 ≥ 50) means web research is NOT skipped despite the tiny excerpt.
+  assert.equal(logs.some((l) => /skipping web research/.test(l)), false, "ctx.added_line_count keeps web research on");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 14 — diff_path mismatch guard (fail-closed)
+// If the ctx carries a diff_path that does not match the brain's DIFF_PATH constant,
+// the run must abort before any squad is dispatched (second source of truth = split brain risk).
+// ---------------------------------------------------------------------------
+test("scenario 14: ctx.diff_path mismatch aborts the run before any squad is dispatched", async () => {
+  const { result, calls } = await run({
+    fetch: baseFetch({
+      pr_number: 0, repo: "", post: false,
+      diff_path: "/some/other/path/pr-diff.txt", // mismatches DIFF_PATH (/tmp/pr-diff.txt)
+    }),
+  });
+
+  assert.equal(result.ok, false, "a diff_path mismatch must abort with ok:false");
+  assert.match(result.reason, /diff_path/i, "the abort reason must name diff_path");
+  assert.ok(result.reason.includes("/tmp/pr-diff.txt"), "the abort reason must name the expected path");
+  assert.ok(result.reason.includes("/some/other/path/pr-diff.txt"), "the abort reason must name the ctx path");
+  assert.equal(has(calls, "holistic"), false, "holistic must not run on a diff_path mismatch");
+  assert.equal(has(calls, "review:"), false, "squad must not be dispatched on a diff_path mismatch");
+});
+
+test("scenario 14b: ctx.diff_path matching DIFF_PATH is accepted (normal path)", async () => {
+  // diff_path == DIFF_PATH -> no abort; the run completes normally.
+  const { result } = await run({
+    fetch: baseFetch({
+      pr_number: 0, repo: "", post: false,
+      diff_path: "/tmp/pr-diff.txt", // matches DIFF_PATH exactly
+    }),
+  });
+
+  assert.equal(result.ok, true, "a matching diff_path must not abort");
+  assert.equal(result.mode, "first");
+});
+
+test("scenario 14c: ctx without diff_path (older ctx) is accepted (no abort)", async () => {
+  // An older ctx that predates diff_path in the schema has no diff_path field — must not abort.
+  const fetchData = baseFetch({ pr_number: 0, repo: "", post: false });
+  delete fetchData.diff_path;
+  const { result } = await run({ fetch: fetchData });
+
+  assert.equal(result.ok, true, "a ctx without diff_path must not abort");
+  assert.equal(result.mode, "first");
 });

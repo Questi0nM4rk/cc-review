@@ -173,7 +173,55 @@ cp /tmp/pr-diff.txt /tmp/run/diff.txt 2>/dev/null || true
 # ── Everything below ALWAYS runs (even if the review died mid-way) ───────────
 RUN_FAILED=0
 
-# 4) Completion + ground-truth gate (#75). The verdict logic lives in scripts/gate.mjs (pure,
+# 4a) POST (reshape Phase 2). The brain no longer posts — it returns a post_run block (shaped as the
+# post-run.mjs ctx) plus a mode. The runner drives the deterministic post-run adapter verb here:
+#   - first/rerun: extract .post_run → post-run verb (reply-once → resolve → post-review → verify retry
+#     → review-state/findings marker writes) → write its JSON to .cc-run/cc-postrun-result.json, the
+#     gate's authoritative "did the verdict land" signal.
+#   - answer:       post the .answer as a comment via the post-overview verb (no review).
+#   - rerun-blocked: post the .block_reason nag via post-overview, but ONLY if the PR has no existing
+#     comment carrying the '<!-- cc-review:nag -->' marker (dedup, so a re-run never stacks nags).
+# All best-effort/idempotent; a missing postrun-result on a first/rerun review FAILS at gate.mjs (4b).
+if [ "$CC_POST" = "1" ] && [ -f .cc-run/cc-result.json ]; then
+  CC_MODE=$(jq -r '.mode // ""' .cc-run/cc-result.json 2>/dev/null || echo "")
+  case "$CC_MODE" in
+    first|rerun)
+      if jq -e '.post_run != null' .cc-run/cc-result.json >/dev/null 2>&1; then
+        jq -c '.post_run' .cc-run/cc-result.json > /tmp/cc-postrun-input.json
+        tsx "$CC_REVIEW_BOT_DIR/scripts/review-platform.ts" post-run --input /tmp/cc-postrun-input.json \
+          > .cc-run/cc-postrun-result.json 2>/tmp/run/postrun-stderr.txt \
+          || echo "::warning::post-run step exited non-zero (see the postrun-result / stderr); the gate will judge landed"
+        cp .cc-run/cc-postrun-result.json /tmp/run/cc-postrun-result.json 2>/dev/null || true
+      fi
+      ;;
+    answer)
+      jq -r '.answer // ""' .cc-run/cc-result.json > /tmp/cc-answer.md
+      tsx "$CC_REVIEW_BOT_DIR/scripts/review-platform.ts" post-overview --pr "$PR_NUMBER" --body-file /tmp/cc-answer.md \
+        >/dev/null 2>&1 || echo "(could not post the answer comment)"
+      ;;
+    rerun-blocked)
+      # Dedup: skip the nag if any existing issue comment already carries the marker.
+      HAS_NAG=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+        | jq -r 'if type=="array" then ([.[] | select((.body // "") | contains("<!-- cc-review:nag -->"))] | length) else 0 end' 2>/dev/null || echo 0)
+      if [ "${HAS_NAG:-0}" = "0" ]; then
+        { printf '<!-- cc-review:nag -->\n'; jq -r '.block_reason // ""' .cc-run/cc-result.json; } > /tmp/cc-nag.md
+        tsx "$CC_REVIEW_BOT_DIR/scripts/review-platform.ts" post-overview --pr "$PR_NUMBER" --body-file /tmp/cc-nag.md \
+          >/dev/null 2>&1 || echo "(could not post the rerun-blocked nag comment)"
+        printf '{"nag":"posted"}\n' > .cc-run/cc-postrun-result.json
+      else
+        # The nag already exists — skipping it produces NO new comment, so the comment-growth check would
+        # fail the run even though the dedup is CORRECT behaviour. Record the skip so gate.mjs accepts it
+        # (rerun-blocked accepts EITHER comment growth OR nag==skipped-duplicate) — dedup must not starve
+        # the completion gate.
+        echo "rerun-blocked: nag already present on the PR — not re-posting"
+        printf '{"nag":"skipped-duplicate"}\n' > .cc-run/cc-postrun-result.json
+      fi
+      cp .cc-run/cc-postrun-result.json /tmp/run/cc-postrun-result.json 2>/dev/null || true
+      ;;
+  esac
+fi
+
+# 4b) Completion + ground-truth gate (#75). The verdict logic lives in scripts/gate.mjs (pure,
 # unit-tested) so it can't drift like the old OR-rule did; this shell only gathers inputs and acts on
 # the result. Surface the sentinel into the log dir first so a post-mortem can read the brain's return.
 cp .cc-run/cc-result.json /tmp/run/cc-result.json 2>/dev/null || true
@@ -183,10 +231,12 @@ if [ "$CC_POST" = "1" ]; then
   AFTER_COMMENTS=$(bot_count "issues/${PR_NUMBER}/comments?per_page=100")
 fi
 # gate.mjs reads the sentinel (.cc-run/cc-result.json — absent ⇒ the run never finished, even if
-# agentapi said 'stable') and cross-checks GitHub PER MODE: a normal review (first/rerun) must raise
-# the FORMAL review count; answer/rerun-blocked accept comment growth; an overview comment alone never
-# passes. Non-empty stdout = the failure reason; empty = verified success. gate.mjs always exits 0.
-REASON="$(SENTINEL="$WS/.cc-run/cc-result.json" RUN_RC="$RUN_RC" CC_POST="$CC_POST" \
+# agentapi said 'stable') AND, for a first/rerun review, the runner's post-run result
+# (.cc-run/cc-postrun-result.json — the AUTHORITATIVE landed signal; absent ⇒ the post step never ran).
+# answer/rerun-blocked accept comment growth; an overview comment alone never satisfies a review.
+# Non-empty stdout = the failure reason; empty = verified success. gate.mjs always exits 0.
+REASON="$(SENTINEL="$WS/.cc-run/cc-result.json" POSTRUN="$WS/.cc-run/cc-postrun-result.json" \
+  RUN_RC="$RUN_RC" CC_POST="$CC_POST" \
   BEFORE_REVIEWS="$BEFORE_REVIEWS" AFTER_REVIEWS="$AFTER_REVIEWS" \
   BEFORE_COMMENTS="$BEFORE_COMMENTS" AFTER_COMMENTS="$AFTER_COMMENTS" \
   node "$CC_REVIEW_BOT_DIR/scripts/gate.mjs" 2>/dev/null)"

@@ -19,6 +19,8 @@
  *   post-review  --pr N --payload F          -> { posted, event }           (atomic on GH; note+discussions on GL)
  *   resolve      --pr N --thread ID          -> { resolved }
  *   reply        --pr N --thread ID --body-file F  -> { replied }
+ *   post-run     --input F                   -> { landed, posted, attempts, replyFailures, resolveFailures, writes }
+ *                                               (drives the WHOLE Post phase from a ctx JSON — reshape Phase 2)
  *
  * Payload file shape (post-review):
  *   { "event": "APPROVE"|"REQUEST_CHANGES", "body": "...", "comments": [{ "path","line","side"?,"body" }] }
@@ -28,10 +30,13 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { classifyPosted } from "./posted.mjs";
 import { isBotThread } from "./threads.mjs";
-import { assembleCtx, parseReviewConfig, abortCtx } from "./prefetch.mjs";
+import { assembleCtx, parseReviewConfig, abortCtx, DIFF_PATH } from "./prefetch.mjs";
+import { executePostRun } from "./post-run.mjs";
 
 // Hidden marker on the bot's overview comment. It doubles as the per-PR "already reviewed"
 // state flag (SPEC §4): get-overview matches it, and the brain embeds it in the overview body.
@@ -505,10 +510,76 @@ function prefetch(): never {
     const threads = d.platform === "github" ? gh.threads(d.repo, pr, botLogin) : gl.threads(d.repo, pr, botLogin);
     const overview = d.platform === "github" ? gh.getOverview(d.repo, pr) : gl.getOverview(d.repo, pr);
     const reviewState = readJsonFile(`${memDir}/pr-${prNum}/review-state.json`);
+    // The full diff NEVER rides through the relay LLM anymore — write it to disk so the reviewers read
+    // it verbatim with bash. assembleCtx carries only a bounded excerpt in the ctx JSON. (--local mode
+    // already reads the file via prefetchedDiff(), so it leaves the file as-is.)
+    if (typeof context.diff === "string") writeFileSync(DIFF_PATH, context.diff);
     return out(assembleCtx({ input, config, userMessage, context, threads, overview, reviewState }));
   } catch {
     return out(abortCtx("prefetch platform failure"));
   }
+}
+
+// --------------------------------------------------------------------------- //
+// post-run — the whole Post phase, sequenced deterministically (reshape Phase 2)
+// --------------------------------------------------------------------------- //
+
+// Wire the pure executePostRun sequencer (post-run.mjs) to the real gh/gl backends: build an adapter
+// closure that maps (verb, args) to the existing postReview/resolve/reply/classifyPosted internals
+// (no duplicated I/O), a real writeFile, and print the result. The ctx JSON (--input) holds everything
+// the module needs: pr_number, repo, platform, head_sha, bot_login, payload, replies, resolve_ids,
+// review_state, finding_rows, mem_dir. The inline payload is spilled to a temp file so postReview —
+// which reads a payload FILE — is reused verbatim.
+async function postRun(): Promise<never> {
+  const ctx = readJsonFile(requireFlag("input"));
+  if (!ctx || typeof ctx !== "object") die("post-run: --input is not valid JSON");
+
+  const platform: Platform = ctx.platform === "gitlab" ? "gitlab" : "github";
+  const repo = String(ctx.repo ?? "");
+  const pr = String(ctx.pr_number ?? "");
+  const be = platform === "github" ? gh : gl;
+
+  const adapter = async (verb: string, a: any): Promise<any> => {
+    switch (verb) {
+      case "reply":
+        return platform === "github"
+          ? gh.reply(repo, pr, String(a.comment_id), String(a.body ?? ""))
+          : gl.reply(repo, pr, String(a.thread), String(a.body ?? ""));
+      case "resolve":
+        return platform === "github"
+          ? gh.resolve(String(a.thread))
+          : gl.resolve(repo, pr, String(a.thread));
+      case "post-review": {
+        const tmp = join(mkdtempSync(join(tmpdir(), "cc-post-")), "payload.json");
+        writeFileSync(tmp, JSON.stringify(a.payload ?? {}));
+        return be.postReview(repo, pr, tmp);
+      }
+      case "verify-posted": {
+        const revR = run("gh", ["api", `repos/${repo}/pulls/${pr}/reviews`, "--paginate"]);
+        if (revR.code !== 0) die("gh list reviews failed", revR.stderr);
+        const reviews: Array<unknown> = JSON.parse(revR.stdout || "[]");
+        const comR = run("gh", ["api", `repos/${repo}/pulls/${pr}/comments`, "--paginate"]);
+        if (comR.code !== 0) die("gh list inline comments failed", comR.stderr);
+        const comments: Array<unknown> = JSON.parse(comR.stdout || "[]");
+        return classifyPosted(reviews, comments, String(a.head_sha ?? ""), String(a.bot_login || "cc-review[bot]"));
+      }
+      default:
+        return die(`post-run adapter: unknown verb ${verb}`);
+    }
+  };
+
+  // Two disk seams: writeFile OVERWRITES (review-state.json — a re-run replaces the marker), appendFile
+  // APPENDS (findings.jsonl — the learning loop reads the UNION of rows across re-runs, so a re-run's
+  // rows must land AFTER earlier rows; overwriting dropped every prior run's findings — Codex P2).
+  const writeFile = async (path: string, content: string): Promise<void> => {
+    writeFileSync(path, content);
+  };
+  const appendFile = async (path: string, content: string): Promise<void> => {
+    appendFileSync(path, content);
+  };
+
+  const res = await executePostRun(ctx, adapter, writeFile, appendFile);
+  return out(res);
 }
 
 // --------------------------------------------------------------------------- //
@@ -518,7 +589,7 @@ function prefetch(): never {
 function main() {
   const verb = process.argv[2];
   if (!verb || verb === "--help" || verb === "-h") {
-    process.stdout.write("verbs: detect | context | threads | get-overview | prefetch | post-overview | edit-overview | post-review | resolve | reply | verify-posted\n");
+    process.stdout.write("verbs: detect | context | threads | get-overview | prefetch | post-overview | edit-overview | post-review | resolve | reply | verify-posted | post-run\n");
     process.exit(verb ? 0 : 1);
   }
 
@@ -527,6 +598,17 @@ function main() {
   if (verb === "prefetch") return prefetch();
 
   try {
+    // post-run reads platform/repo from its ctx JSON (no detect()) and is async.
+    if (verb === "post-run") {
+      postRun().catch((e) => {
+        if (e instanceof AdapterError) {
+          process.stdout.write(JSON.stringify({ error: e.message, detail: e.detail }));
+          process.exit(1);
+        }
+        throw e;
+      });
+      return;
+    }
     return dispatch(verb);
   } catch (e) {
     // Preserve the exact pre-refactor CLI contract: an adapter failure = error JSON on stdout + exit 1.

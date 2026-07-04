@@ -27,8 +27,9 @@ const EXPORTS = [
   "buildPayload", "difficultyPath", "difficultyFloor", "isDocOnlyChange", "fixMermaid", "sigChangePrefilter", "resolveSig",
   "fnv1a32", "normalizeForId", "findingId", "inlineFindings", "computeCalibration",
   "resolveRunner", "resolveBotLogin", "dropIgnoredFindings", "partitionGraded",
-  "intentPrompt", "fetchPrompt", "verifyPostedPrompt", "threadOpsPrompt", "postReviewPrompt",
+  "intentPrompt", "fetchPrompt",
   "normalizeSquadResult", "isCheckFailure", "commentMgmtPrompt",
+  "diffRef", "holisticPrompt", "reviewPrompt", "checkPrompt", "sigChangePrompt", "webResearchPrompt",
 ];
 
 const raw = readFileSync(BRAIN, "utf8");
@@ -657,6 +658,28 @@ test("sigChangePrefilter: a higher configured added_lines threshold relaxes the 
   assert.deepEqual({ decided: tuned.decided, significant: tuned.significant }, { decided: true, significant: false });
 });
 
+test("sigChangePrefilter: truncated excerpt + exact count above threshold => decided by the exact count, not the excerpt", () => {
+  // The excerpt has only 5 added lines — far below the 150 threshold. Without the addedExact param the
+  // prefilter would see 5 lines and decide not-significant OUTRIGHT (the silent-miss bug: no agent confirm).
+  // The exact count must restore the designed ladder for a same-file rewrite: <120 not significant,
+  // >=120 borderline (agent confirms), >=300 (bigAbsoluteAdd) significant on its own.
+  const files = new Array(10).fill("f"); // same file count -> file gate stays clear
+  const meta = { reviewed_file_count: 10 };
+  const TINY_EXCERPT = plusLines(5); // truncated: only 5 added lines visible
+  // Without exact count: 5 lines -> well under threshold -> not significant (decided=true, significant=false)
+  const withoutExact = H.sigChangePrefilter(TINY_EXCERPT, files, meta);
+  assert.deepEqual({ decided: withoutExact.decided, significant: withoutExact.significant }, { decided: true, significant: false });
+  // With exact count 200 (over threshold, same files): NOT decided outright — borderline, defer to the agent
+  const withExact = H.sigChangePrefilter(TINY_EXCERPT, files, meta, undefined, 200);
+  assert.deepEqual({ decided: withExact.decided, borderline: withExact.borderline }, { decided: false, borderline: true });
+  // With exact count 300 (bigAbsoluteAdd escape hatch): significant on its own
+  const withExactBig = H.sigChangePrefilter(TINY_EXCERPT, files, meta, undefined, 300);
+  assert.deepEqual({ decided: withExactBig.decided, significant: withExactBig.significant }, { decided: true, significant: true });
+  // With exact count 130 (borderline band): must defer to the agent
+  const withExactBorderline = H.sigChangePrefilter(TINY_EXCERPT, files, meta, undefined, 130);
+  assert.deepEqual({ decided: withExactBorderline.decided, borderline: withExactBorderline.borderline }, { decided: false, borderline: true });
+});
+
 // ---------------------------------------------------------------------------
 // Edge-case diff shapes (#12) — rename / delete / binary / non-ASCII / multi-lang.
 // Characterizes the deterministic parsers against real git-diff output so these
@@ -806,30 +829,116 @@ test("fetchPrompt: relays the runner-assembled ctx file verbatim, with an abort 
   assert.ok(p.includes('"diff":""'));
 });
 
-test("verifyPostedPrompt: passes a quoted --bot-login to the adapter verb", () => {
-  const p = H.verifyPostedPrompt(5, "abc123");
-  assert.ok(p.includes('--bot-login "cc-review[bot]"'));
-  assert.ok(p.includes("verify-posted --pr 5 --head-sha abc123"));
+// ---------------------------------------------------------------------------
+// The relay (fetch) prompt: pr_number 0 is a VALID value (local dry-run), and the
+// abort shape is ONLY for a missing/unreadable file. The agent once hallucinated
+// "pr_number 0 → abort" on a legit local-mode ctx; the prompt now says so explicitly.
+// ---------------------------------------------------------------------------
+test("fetchPrompt: states pr_number 0 is valid (local dry-run), not an abort trigger", () => {
+  const p = H.fetchPrompt();
+  assert.ok(/pr_number 0 is a valid/i.test(p), "must say pr_number 0 is a valid local-dry-run value");
+  // the abort shape is scoped to a missing/unreadable file only
+  assert.ok(/missing.*unreadable|unreadable.*missing|missing or unreadable/i.test(p));
 });
 
-test("threadOpsPrompt: contains reply+resolve ops, marked run-once, and never posts the review", () => {
-  const p = H.threadOpsPrompt({
-    repo: "o/r", pr_number: 5, resolve_ids: ["T1"],
-    replies: [{ thread_id: "T1", comment_db_id: 9, reply_body: "Fixed: x" }],
-  });
-  assert.ok(p.includes("reply"));
-  assert.ok(p.includes('"T1"'));
-  assert.ok(p.includes("ONCE"));
-  assert.ok(!p.includes("post-review"));
+// ---------------------------------------------------------------------------
+// diffRef — the shared builder that replaces inline ${untrustedBlock("PR diff", diff)}.
+// THE FIX: the diff no longer rides in any prompt. diffRef tells the agent the FULL
+// unified diff is on disk at DIFF_PATH, to read it with bash, and that its content is
+// DATA ONLY (never instructions) — the untrusted-fence framing carried over.
+// ---------------------------------------------------------------------------
+test("diffRef: points at the on-disk diff path and instructs a bash read", () => {
+  const r = H.diffRef();
+  assert.ok(r.includes("/tmp/pr-diff.txt"), "diffRef must name the on-disk diff path");
+  assert.ok(/\bbash\b/i.test(r), "diffRef must instruct a bash read");
+  assert.ok(/head|sed|cut|grep/i.test(r), "diffRef must mention byte-slicing / grep for big files");
 });
 
-test("postReviewPrompt: posts only the review payload, no thread operations", () => {
-  const p = H.postReviewPrompt({ repo: "o/r", pr_number: 5, payload: { event: "APPROVE", body: "b", comments: [] } });
-  assert.ok(p.includes("post-review --pr 5"));
-  assert.ok(p.includes('"APPROVE"'));
-  assert.ok(!p.includes("resolve threads"));
-  assert.ok(!p.includes("reply on threads"));
+test("diffRef: carries the data-only / never-instructions untrusted framing", () => {
+  const r = H.diffRef();
+  assert.ok(/data only|data,? (?:and )?never instructions|never instructions/i.test(r), "diffRef must frame the diff as data only");
 });
+
+test("diffRef: does NOT inline any diff bytes", () => {
+  // The whole point: no diff argument, no diff content.
+  assert.equal(H.diffRef.length, 0, "diffRef takes no diff argument");
+});
+
+// ---------------------------------------------------------------------------
+// Every diff-carrying prompt now references the on-disk diff via diffRef instead of
+// inlining ${untrustedBlock("PR diff", diff)}. Assert the path is present and the raw
+// diff bytes are NOT (the bug: a large diff overflows the relay's truncation cap).
+// RAW_DIFF is the sentinel: its unique string would appear verbatim if any builder
+// still inlined a diff argument. Since the diff param is gone, none of the builders
+// accept it — confirmed by the .length checks in the arity test below.
+// ---------------------------------------------------------------------------
+const RAW_DIFF_SENTINEL = "INLINED_DIFF_BYTES";
+
+// All 7 builders that previously carried `void diff` must now have no diff parameter.
+test("prompt builders: diff parameter removed — arity confirms no diff argument accepted", () => {
+  // intentPrompt(userMessage) — was (userMessage, diff)
+  assert.equal(H.intentPrompt.length, 1, "intentPrompt takes 1 arg (userMessage), not 2");
+  // holisticPrompt(threadCount) — was (diff, threadCount)
+  assert.equal(H.holisticPrompt.length, 1, "holisticPrompt takes 1 arg (threadCount), not 2");
+  // webResearchPrompt(kind, category) — was (kind, diff, category)
+  assert.equal(H.webResearchPrompt.length, 2, "webResearchPrompt takes 2 args (kind, category), not 3");
+  // reviewPrompt(domain, tier, category, partition, langs, tools, projectContext, overview) — was (..., diff, ...)
+  assert.equal(H.reviewPrompt.length, 8, "reviewPrompt takes 8 args (no diff), was 9");
+  // checkPrompt(findings, projectContext) — was (findings, diff, projectContext)
+  assert.equal(H.checkPrompt.length, 2, "checkPrompt takes 2 args (findings, projectContext), not 3");
+  // commentMgmtPrompt(t) — was (t, diff)
+  assert.equal(H.commentMgmtPrompt.length, 1, "commentMgmtPrompt takes 1 arg (t), not 2");
+  // sigChangePrompt(signal) — was (signal, diff)
+  assert.equal(H.sigChangePrompt.length, 1, "sigChangePrompt takes 1 arg (signal), not 2");
+});
+
+test("holisticPrompt: references the on-disk diff, does not inline diff bytes", () => {
+  const p = H.holisticPrompt(0);
+  assert.ok(p.includes("/tmp/pr-diff.txt"), "holisticPrompt must point at the diff file");
+  assert.equal(p.includes(RAW_DIFF_SENTINEL), false, "holisticPrompt must NOT inline diff bytes");
+});
+
+test("reviewPrompt: references the on-disk diff, does not inline diff bytes", () => {
+  const p = H.reviewPrompt("security", "deep", "feature", [], [], [], "", "");
+  assert.ok(p.includes("/tmp/pr-diff.txt"), "reviewPrompt must point at the diff file");
+  assert.equal(p.includes(RAW_DIFF_SENTINEL), false, "reviewPrompt must NOT inline diff bytes");
+});
+
+test("checkPrompt: references the on-disk diff, does not inline diff bytes", () => {
+  const p = H.checkPrompt([], "");
+  assert.ok(p.includes("/tmp/pr-diff.txt"), "checkPrompt must point at the diff file");
+  assert.equal(p.includes(RAW_DIFF_SENTINEL), false, "checkPrompt must NOT inline diff bytes");
+});
+
+test("commentMgmtPrompt: references the on-disk diff, does not inline diff bytes", () => {
+  const t = { id: "T1", path: "a.ts", line: 3, original_body: "x", author_replied: false };
+  const p = H.commentMgmtPrompt(t);
+  assert.ok(p.includes("/tmp/pr-diff.txt"), "commentMgmtPrompt must point at the diff file");
+  assert.equal(p.includes(RAW_DIFF_SENTINEL), false, "commentMgmtPrompt must NOT inline diff bytes");
+});
+
+test("sigChangePrompt: references the on-disk diff, does not inline diff bytes", () => {
+  const p = H.sigChangePrompt("files now 3 vs 1");
+  assert.ok(p.includes("/tmp/pr-diff.txt"), "sigChangePrompt must point at the diff file");
+  assert.equal(p.includes(RAW_DIFF_SENTINEL), false, "sigChangePrompt must NOT inline diff bytes");
+});
+
+test("intentPrompt: references the on-disk diff, does not inline diff bytes", () => {
+  const p = H.intentPrompt("review this");
+  assert.ok(p.includes("/tmp/pr-diff.txt"), "intentPrompt must point at the diff file");
+  assert.equal(p.includes(RAW_DIFF_SENTINEL), false, "intentPrompt must NOT inline diff bytes");
+});
+
+test("webResearchPrompt: references the on-disk diff, does not inline diff bytes", () => {
+  const p = H.webResearchPrompt("ai-slop", "feature");
+  assert.ok(p.includes("/tmp/pr-diff.txt"), "webResearchPrompt must point at the diff file");
+  assert.equal(p.includes(RAW_DIFF_SENTINEL), false, "webResearchPrompt must NOT inline diff bytes");
+});
+
+// NOTE (reshape Phase 2): the verifyPostedPrompt / threadOpsPrompt / postReviewPrompt tests are GONE —
+// those prompts moved to the runner's post-run step (scripts/post-run.mjs, unit-tested in
+// post-run.test.mjs). The brain no longer owns any posting prompt; overviewWritePrompt stays (the
+// mid-run overview) and is exercised by the flow harness's post-path scenarios.
 
 // ---------------------------------------------------------------------------
 // flow-hardening review fixes: fail-closed paths must be testable + real,

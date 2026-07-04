@@ -14,6 +14,51 @@ function normPlatform(p) {
   return p === "gitlab" ? "gitlab" : "github";
 }
 
+// The on-disk path the runner writes the FULL unified diff to. The ctx JSON the relay agent returns
+// carries only a bounded EXCERPT of the diff (never the whole thing — a large diff overflows the
+// tool-result truncation cap and can never be relayed verbatim); the reviewers read the full diff
+// from this file with bash. Must match review-platform.ts's prefetchedDiff() path.
+export const DIFF_PATH = "/tmp/pr-diff.txt";
+
+// The maximum number of characters of the diff carried inline in the ctx excerpt. Anything longer is
+// sliced to this length and flagged diff_truncated; the reviewers byte-slice/grep the full file at
+// DIFF_PATH for the rest. Chosen well under the tool-result truncation cap so the relay always fits.
+export const DIFF_EXCERPT_MAX = 20000;
+
+// Ported VERBATIM from the brain's changedFiles (strict-review.mjs) — kept in parity so the brain can
+// consume ctx.diff_files instead of re-parsing a (possibly excerpted) diff. Captures `+++ b/<path>`
+// hunk headers plus `diff --git a/… b/<path>` (renames, binary/mode-only changes with no hunk), dedups.
+export function diffFiles(diff) {
+  if (typeof diff !== "string" || !diff) return [];
+  const files = new Set();
+  for (const m of diff.matchAll(/^\+\+\+ b\/(.+)$/gm)) files.add(m[1]);
+  for (const m of diff.matchAll(/^diff --git a\/.+ b\/(.+)$/gm)) files.add(m[1]);
+  return [...files];
+}
+
+// Ported VERBATIM from the brain's addedLineCount — counts added (`+`) lines, excluding the `+++`
+// file header. The brain uses ctx.added_line_count instead of recomputing on the excerpted diff.
+export function addedLines(diff) {
+  if (typeof diff !== "string" || !diff) return 0;
+  let n = 0;
+  for (const _m of diff.matchAll(/^\+(?!\+\+ )/gm)) n++;
+  return n;
+}
+
+// Given the FULL diff, produce the three precomputed fields the ctx carries alongside a bounded
+// excerpt: a truncated `diff` excerpt, a `diff_truncated` flag, and the exact `diff_files` /
+// `added_line_count` (computed over the FULL diff, never the excerpt).
+function diffFields(fullDiff) {
+  const full = typeof fullDiff === "string" ? fullDiff : "";
+  return {
+    diff: full.slice(0, DIFF_EXCERPT_MAX),
+    diff_truncated: full.length > DIFF_EXCERPT_MAX,
+    diff_path: DIFF_PATH,
+    diff_files: diffFiles(full),
+    added_line_count: addedLines(full),
+  };
+}
+
 /**
  * The abort shape: emitted on any platform failure (adapter error / PR not found / no auth) and by
  * the relay agent when the ctx file is missing. NEVER fabricate a diff or identity — a zero pr_number
@@ -27,7 +72,7 @@ function normPlatform(p) {
 export function abortCtx(reason) {
   void reason;
   return {
-    diff: "",
+    ...diffFields(""),
     pr_number: 0,
     repo: "",
     platform: "github",
@@ -64,9 +109,10 @@ export function assembleCtx(pieces) {
 
   if (pieces.local) {
     // Local dry-run: no PR. Posting is hard-off, no threads, no overview — the brain treats pr_number 0
-    // as a local dry-run and never touches a remote.
+    // as a local dry-run and never touches a remote. The full diff already lives at DIFF_PATH (the
+    // runner wrote it / --local mode read it from there); the ctx carries only the bounded excerpt.
     return {
-      diff: typeof pieces.diff === "string" ? pieces.diff : "",
+      ...diffFields(typeof pieces.diff === "string" ? pieces.diff : ""),
       pr_number: 0,
       repo: typeof pieces.repo === "string" ? pieces.repo : "",
       platform: normPlatform(input.platform),
@@ -90,7 +136,9 @@ export function assembleCtx(pieces) {
   const prNum = Number(input.pr_number);
 
   return {
-    diff: typeof ctx.diff === "string" ? ctx.diff : "",
+    // The full diff came from the adapter's context verb; the runner also writes it to DIFF_PATH.
+    // The ctx carries only the bounded excerpt + the exact precomputed file-list / added-line count.
+    ...diffFields(typeof ctx.diff === "string" ? ctx.diff : ""),
     pr_number: Number.isFinite(prNum) && prNum > 0 ? Math.trunc(prNum) : 0,
     // Prefer the requested repo (cc-input.json) — that's what the identity gate compares against;
     // fall back to the adapter's detected repo only when the input omitted it.

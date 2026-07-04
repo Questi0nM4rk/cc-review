@@ -9,7 +9,7 @@
 // Run: node --test scripts/prefetch.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assembleCtx, parseReviewConfig, abortCtx } from "./prefetch.mjs";
+import { assembleCtx, parseReviewConfig, abortCtx, diffFiles, addedLines, DIFF_EXCERPT_MAX, DIFF_PATH } from "./prefetch.mjs";
 
 // The FETCH_SCHEMA required keys the brain validates against (kept in sync with strict-review.mjs).
 const REQUIRED = ["diff", "pr_number", "repo", "platform", "threads"];
@@ -234,4 +234,99 @@ test("abortCtx: assembleCtx's abort/null/undefined paths produce the identical s
   assert.deepEqual(assembleCtx({ abort: true }), abortCtx());
   assert.deepEqual(assembleCtx(null), abortCtx());
   assert.deepEqual(assembleCtx(undefined), abortCtx());
+});
+
+// ---------------------------------------------------------------------------
+// diffFiles — ported from the brain's changedFiles (see helpers.test.mjs fixtures).
+// The diff no longer flows through an LLM; the file list is precomputed here so the
+// brain reads ctx.diff_files instead of re-parsing a (possibly truncated) excerpt.
+// ---------------------------------------------------------------------------
+test("diffFiles: parses +++ and diff --git, dedupes (parity with the brain's changedFiles)", () => {
+  const diff = [
+    "diff --git a/src/a.ts b/src/a.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/a.ts",
+    "@@ -1 +1 @@",
+    "+x",
+    "diff --git a/src/b.ts b/src/b.ts",
+    "+++ b/src/b.ts",
+  ].join("\n");
+  assert.deepEqual(diffFiles(diff).sort(), ["src/a.ts", "src/b.ts"]);
+});
+
+test("diffFiles: captures the new path on a rename (parity with changedFiles)", () => {
+  const diff = "diff --git a/old/name.ts b/new/name.ts\nrename from old/name.ts\nrename to new/name.ts\n";
+  assert.deepEqual(diffFiles(diff), ["new/name.ts"]);
+});
+
+test("diffFiles: empty / non-string diff → []", () => {
+  assert.deepEqual(diffFiles(""), []);
+  assert.deepEqual(diffFiles(null), []);
+  assert.deepEqual(diffFiles(undefined), []);
+});
+
+// ---------------------------------------------------------------------------
+// addedLines — ported from the brain's addedLineCount.
+// ---------------------------------------------------------------------------
+test("addedLines: counts + lines but not the +++ header (parity with addedLineCount)", () => {
+  const diff = "+++ b/x.ts\n+const a = 1;\n+const b = 2;\n-removed\n context\n+const c = 3;\n";
+  assert.equal(addedLines(diff), 3);
+});
+
+test("addedLines: empty / non-string diff → 0", () => {
+  assert.equal(addedLines(""), 0);
+  assert.equal(addedLines(null), 0);
+  assert.equal(addedLines(undefined), 0);
+});
+
+// ---------------------------------------------------------------------------
+// assembleCtx — bounded-diff excerpt + precomputed fields (the fix: the diff never
+// rides through the relay LLM; the full diff is on disk at DIFF_PATH, the ctx carries
+// only a bounded excerpt plus exact precomputed file-list + added-line count).
+// ---------------------------------------------------------------------------
+test("assembleCtx: a small diff is NOT truncated and diff_truncated is false", () => {
+  const diff = "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+const y = 1;\n";
+  const ctx = assembleCtx({ input: { pr_number: 7, repo: "o/r", platform: "github" }, context: { diff, head: "h" }, threads: [], overview: { id: null } });
+  assert.equal(ctx.diff, diff, "full small diff rides in the excerpt");
+  assert.equal(ctx.diff_truncated, false);
+  assert.equal(ctx.diff_path, DIFF_PATH);
+  assert.deepEqual(ctx.diff_files, ["src/a.ts"]);
+  assert.equal(ctx.added_line_count, 1);
+});
+
+test("assembleCtx: a diff over the excerpt cap is bounded and diff_truncated is true", () => {
+  const header = "diff --git a/big.ts b/big.ts\n+++ b/big.ts\n";
+  const big = header + "+x\n".repeat(DIFF_EXCERPT_MAX); // far over the cap
+  const ctx = assembleCtx({ input: { pr_number: 7, repo: "o/r", platform: "github" }, context: { diff: big, head: "h" }, threads: [], overview: { id: null } });
+  assert.equal(ctx.diff.length, DIFF_EXCERPT_MAX, "excerpt is exactly the first DIFF_EXCERPT_MAX chars");
+  assert.equal(ctx.diff, big.slice(0, DIFF_EXCERPT_MAX));
+  assert.equal(ctx.diff_truncated, true);
+  assert.equal(ctx.diff_path, DIFF_PATH);
+  // file list + counts come from the FULL diff, not the excerpt
+  assert.deepEqual(ctx.diff_files, ["big.ts"]);
+  assert.equal(ctx.added_line_count, DIFF_EXCERPT_MAX, "count is over the FULL diff, not the excerpt");
+});
+
+test("assembleCtx: a diff exactly at the cap is not marked truncated", () => {
+  const diff = "x".repeat(DIFF_EXCERPT_MAX);
+  const ctx = assembleCtx({ input: { pr_number: 7, repo: "o/r", platform: "github" }, context: { diff, head: "h" }, threads: [], overview: { id: null } });
+  assert.equal(ctx.diff.length, DIFF_EXCERPT_MAX);
+  assert.equal(ctx.diff_truncated, false);
+});
+
+test("assembleCtx: local mode also carries diff_path, diff_files, added_line_count, diff_truncated", () => {
+  const diff = "diff --git a/local.ts b/local.ts\n+++ b/local.ts\n+a\n+b\n";
+  const ctx = assembleCtx({ local: true, input: { pr_number: 0, repo: "", platform: "github", post: false }, config: {}, userMessage: "", diff, repo: "detected/repo", reviewState: null });
+  assert.equal(ctx.diff_path, DIFF_PATH);
+  assert.equal(ctx.diff_truncated, false);
+  assert.deepEqual(ctx.diff_files, ["local.ts"]);
+  assert.equal(ctx.added_line_count, 2);
+});
+
+test("assembleCtx: the abort shape carries the new fields with safe empties", () => {
+  const a = assembleCtx({ abort: true });
+  assert.equal(a.diff_path, DIFF_PATH);
+  assert.equal(a.diff_truncated, false);
+  assert.deepEqual(a.diff_files, []);
+  assert.equal(a.added_line_count, 0);
 });

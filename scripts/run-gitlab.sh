@@ -70,7 +70,10 @@ MEMDIR="${HOME}/.claude/cc-review-memory/${SLUG:-repo}"
 
 # ---- Stage the same inputs the GHA writes (minus the App/CI bits) ------------
 # Truncate any stale prefetched diff so the adapter fetches THIS MR fresh via glab.
-mkdir -p /tmp/run "${MEMDIR}/learnings" "${MEMDIR}/pr-${MR}"
+# .cc-run holds the brain's completion sentinel (cc-result.json) + the runner's post-run result
+# (reshape Phase 2 — posting is runner-side now, same as the GitHub CI path). Clear stale results.
+mkdir -p /tmp/run "${MEMDIR}/learnings" "${MEMDIR}/pr-${MR}" .cc-run
+rm -f .cc-run/cc-result.json .cc-run/cc-postrun-result.json
 : > /tmp/pr-diff.txt
 printf '%s' "$MESSAGE" > /tmp/cc-user-msg.txt
 [[ -f "${MEMDIR}/MEMORY.md" ]] || printf '# Project Memory: %s\n\n(empty)\n' "$REPO" > "${MEMDIR}/MEMORY.md"
@@ -88,7 +91,9 @@ tsx "$ADAPTER" prefetch --pr "$MR" --bot-login "cc-review[bot]" --mem-dir "$MEMD
 
 # bot_dir is passed via args so the brain builds absolute adapter/tool paths (it can't read
 # $CC_REVIEW_BOT_DIR — sub-agents don't inherit env). Locally BOT is the bot repo root.
-PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: ${MR}, repo: '${REPO}', bot_dir: '${BOT}', mem_dir: '${MEMDIR}' }. Run it to completion and report its return value verbatim as JSON. It reads PR/MR number, repo, post-flag, and the @cc-review message from /tmp/cc-input.json + /tmp/cc-user-msg.txt, talks to GitLab via glab through ${ADAPTER}, reads/writes local review memory under ${MEMDIR}, and reads project config from .cc-review.yaml."
+# The agent writes the brain's return verbatim to .cc-run/cc-result.json (the completion sentinel) so
+# the runner can extract the post_run block and drive the post-run step — posting is runner-side now.
+PROMPT="Use the Workflow tool with scriptPath '${SCRIPT}' and args { prNumber: ${MR}, repo: '${REPO}', bot_dir: '${BOT}', mem_dir: '${MEMDIR}' }. Run it to completion. It reads PR/MR number, repo, post-flag, and the @cc-review message from /tmp/cc-input.json + /tmp/cc-user-msg.txt, talks to GitLab via glab through ${ADAPTER}, reads/writes local review memory under ${MEMDIR}, and reads project config from .cc-review.yaml. When the Workflow tool RETURNS, write its return value verbatim as JSON to ${PWD}/.cc-run/cc-result.json using a bash cat-heredoc (NOT the Write tool). Then report the return value verbatim as JSON."
 
 # GitLab path: glab only (no gh). Posting is via the adapter's gl.* verbs.
 # --dangerously-skip-permissions, NOT --permission-mode bypassPermissions: the latter is silently
@@ -100,5 +105,33 @@ printf '%s' "$PROMPT" > /tmp/run/prompt.txt
   --claude-arg --add-dir --claude-arg /tmp \
   --claude-arg --add-dir --claude-arg "${MEMDIR}"
 
-echo "----- workflow transcript (posting happens via glab inside the run; verify on the MR) -----"
+# ---- POST (reshape Phase 2): the brain no longer posts — the runner does -----
+# Same handoff as the GitHub CI path (ci-run.sh 4a): the brain returns a post_run block + a mode; the
+# runner drives the deterministic post-run adapter verb (GitLab: one post, no verify loop). Only on a
+# real (non-dry-run) post. mode==answer/rerun-blocked post a comment via post-overview.
+if [[ "$POST" == "true" && -f .cc-run/cc-result.json ]]; then
+  CC_MODE="$(jq -r '.mode // ""' .cc-run/cc-result.json 2>/dev/null || echo "")"
+  case "$CC_MODE" in
+    first|rerun)
+      if jq -e '.post_run != null' .cc-run/cc-result.json >/dev/null 2>&1; then
+        jq -c '.post_run' .cc-run/cc-result.json > /tmp/cc-postrun-input.json
+        tsx "$ADAPTER" post-run --input /tmp/cc-postrun-input.json > .cc-run/cc-postrun-result.json \
+          || echo "run-gitlab: post-run step exited non-zero (see .cc-run/cc-postrun-result.json)"
+        echo "----- post-run result -----"; cat .cc-run/cc-postrun-result.json 2>/dev/null || true
+      fi
+      ;;
+    answer)
+      jq -r '.answer // ""' .cc-run/cc-result.json > /tmp/cc-answer.md
+      tsx "$ADAPTER" post-overview --pr "$MR" --body-file /tmp/cc-answer.md \
+        || echo "run-gitlab: could not post the answer comment"
+      ;;
+    rerun-blocked)
+      { printf '<!-- cc-review:nag -->\n'; jq -r '.block_reason // ""' .cc-run/cc-result.json; } > /tmp/cc-nag.md
+      tsx "$ADAPTER" post-overview --pr "$MR" --body-file /tmp/cc-nag.md \
+        || echo "run-gitlab: could not post the rerun-blocked nag comment"
+      ;;
+  esac
+fi
+
+echo "----- workflow transcript (posting happens via glab in the runner's post-run step; verify on the MR) -----"
 cat /tmp/run/transcript.txt 2>/dev/null || echo "(no transcript captured)"
