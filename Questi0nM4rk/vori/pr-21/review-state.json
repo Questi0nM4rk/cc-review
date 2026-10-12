@@ -1,0 +1,11 @@
+{
+  "reviewed_head_sha": "0060fdd005d742c8971f4915f452e09de1fee2e8",
+  "reviewed_file_count": 2,
+  "event": "APPROVE",
+  "files": [
+    ".github/workflows/ci.yml",
+    "README.md"
+  ],
+  "reviewed_difficulty": 3,
+  "reviewed_category": "chore"
+}
