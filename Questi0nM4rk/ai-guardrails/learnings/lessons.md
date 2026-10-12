@@ -33,3 +33,6 @@
 ## Documentation Accuracy
 - README stats must be precise about scope: a metric that only covers Bash inputs must not use a label that implies all dangerous inputs are counted.
 - JSONL corpus category fields are load-bearing for by-category reporting — verify read vs write semantics when categorising redirect-write patterns.
+
+## CI Permission Scoping
+- Scope `permissions: contents: write` (or any elevated permission) to the smallest possible job — use a dedicated job with `needs:` for steps like badge publishing rather than granting the permission to the whole workflow. Least-privilege is a first-class CI correctness concern, not a nitpick.

@@ -8,3 +8,5 @@
 - SPEC-001 library table with separate rows for Pre-commit hooks, Claude Code hooks runtime, and Hook target projects — intentional split.
 - isAvailable(commandRunner) parameter naming is correct and consistent — older diff hunks may show earlier naming.
 - ruff.toml exclude array for tests/fixtures is intentional — do not flag its presence or removal based on stale diff state.
+- Review bot rules ('fix every comment') in CLAUDE.md are NOT philosophically inconsistent with hard-stops policy — review bots ARE the enforcement mechanism.
+- CLAUDE.md template content not being DRY violation relative to repo's own CLAUDE.md — separate target audiences.

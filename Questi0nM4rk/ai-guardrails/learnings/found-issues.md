@@ -14,3 +14,6 @@
 
 ## bench/corpus.jsonl
 - Entry id 54 (`echo x > .env`) is in category `secret-read-bash` but is a redirect write, not a read; move to `secret-write-bash` for accurate by-category reporting. (bench/corpus.jsonl:54)
+
+## .github/workflows/check.yml
+- `Publish badges` step grants `permissions: contents: write` at workflow scope; move it into a separate job with `needs: test` and scope the write permission to that job alone — the current placement elevates write access for the entire workflow unnecessarily. (.github/workflows/check.yml:46)

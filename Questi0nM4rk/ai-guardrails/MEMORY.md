@@ -13,5 +13,6 @@ Recurring review themes:
 - README metric labels must exactly match what is measured — a label covering only Bash commands must not claim coverage of Write/Edit/NotebookEdit inputs.
 - Markdown files must stay under the configured line-length limit (300 cols in .markdownlint-cli2.jsonc); violations fail the lefthook pre-commit gate.
 - JSONL corpus category fields must be accurate — a write-redirect (echo x > .env) is not a read.
+- CI workflow `permissions:` must be scoped to the minimum necessary job — steps that need `contents: write` (e.g., badge publishing) belong in a separate job with `needs:` rather than broadening the whole workflow's permission surface.
 
 _Priors seeded from the last 3 merged PRs at install; refined as reviews run._
