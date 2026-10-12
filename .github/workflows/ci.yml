@@ -21,9 +21,11 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
 
@@ -31,16 +33,46 @@ jobs:
         run: node scripts/check-brain.mjs
 
       - name: Deterministic-helper unit tests
+        shell: bash
         run: |
+          set -o pipefail
           node --test \
             scripts/helpers.test.mjs \
             scripts/backfill-helpers.test.mjs \
             scripts/harvest-outcomes.test.mjs \
             scripts/gate.test.mjs \
-            scripts/posted.test.mjs
+            scripts/posted.test.mjs 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       - name: Fetch identity-gate contract test
-        run: node scripts/verify-gate.test.mjs
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/verify-gate.test.mjs 2>&1 | tee -a "$RUNNER_TEMP/test.log"
 
       - name: Invoker auto-answer decision test (bash)
-        run: bash scripts/agentapi-autoanswer.test.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/agentapi-autoanswer.test.sh 2>&1 | tee -a "$RUNNER_TEMP/test.log"
+
+      - name: Publish badges
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/test.log"
+          out="$RUNNER_TEMP/badges"; mkdir -p "$out"
+          badge() { printf '{"schemaVersion":1,"label":"%s","message":"%s","color":"%s"}\n' "$2" "$3" "$4" > "$out/$1.json"; }
+          pass=$(grep -Eo '^ℹ pass [0-9]+' "$log" | grep -Eo '[0-9]+' | paste -sd+ | bc || echo 0)
+          fail=$(grep -Eo '^ℹ fail [0-9]+' "$log" | grep -Eo '[0-9]+' | paste -sd+ | bc || echo 0)
+          color=brightgreen; if [ "$fail" != 0 ] || [ "$pass" = 0 ]; then color=red; fi
+          badge tests tests "$pass passed, $fail failed" "$color"
+          cd "$out"
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "badges for ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges

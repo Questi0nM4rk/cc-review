@@ -6,6 +6,7 @@
 
 [![license](https://img.shields.io/github/license/Questi0nM4rk/cc-review?color=blue)](./LICENSE)
 [![CI](https://github.com/Questi0nM4rk/cc-review/actions/workflows/ci.yml/badge.svg)](https://github.com/Questi0nM4rk/cc-review/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Questi0nM4rk/cc-review/badges/tests.json&style=flat-square)](https://github.com/Questi0nM4rk/cc-review/actions/workflows/ci.yml)
 
 </div>
 
@@ -44,7 +45,7 @@ Run the tests without any secret (Node 24):
 
 ```bash
 npm test
-# 258 pass + 7 pass, 0 fail
+# the summary reports `0 fail`
 ```
 
 ## How it works
@@ -69,14 +70,14 @@ The full contract is in [SPEC.md](SPEC.md).
 
 ## Numbers
 
-Measured 2026-10-12 on Arch Linux, Node 24.14.1.
+[![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Questi0nM4rk/cc-review/badges/tests.json&style=flat-square)](https://github.com/Questi0nM4rk/cc-review/actions/workflows/ci.yml)
 
-| What | Value | How measured |
-| --- | --- | --- |
-| Tests | 265 pass, 0 fail (258 + 7) | `npm test` |
-| Test time | about 31 s wall | `time npm test` |
-| Source size | 5486 code lines, 38 files | `scc --no-cocomo scripts` |
-| Review quality | not measured | no benchmark exists |
+| What | How to measure |
+| --- | --- |
+| Tests | `npm test` (the badge counts only what `ci.yml` runs) |
+| Test time | `time npm test` |
+| Source size | `scc --no-cocomo scripts` |
+| Review quality | Not measured |
 
 Commits include agent-authored work under my identity; design, orchestration and review are mine.
 
