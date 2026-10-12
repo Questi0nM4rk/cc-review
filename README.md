@@ -16,6 +16,12 @@ cc-review runs a real Claude Code session on a Claude subscription, and asks the
 It refuses to be a service, a hosted product or a replacement for a human reviewer.
 It would have no reason to exist if a hosted reviewer gave the same strictness at no extra cost.
 
+## See it on a real PR
+
+[hook-kit #29](https://github.com/Questi0nM4rk/hook-kit/pull/29) and [hook-kit #33](https://github.com/Questi0nM4rk/hook-kit/pull/33) carry real cc-review threads.
+On #29 it caught that a `mv` source counted only as a read, so a rule protecting `/etc` let `mv /etc/passwd /tmp/x` through, and that pipe stages ignored the configured global flags; both were fixed in the PR.
+On #33 it caught that filtering a verify run down to zero checks reported success, and that `--base` could swallow the next flag as its value.
+
 ## Quickstart
 
 The reviewer cannot run without these three things. There is no offline review mode.
