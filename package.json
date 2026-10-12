@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Strict, zero-tolerance PR/MR review bot powered by Claude Code.",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0",
   "scripts": {
     "test": "node scripts/check-brain.mjs && node --test scripts/helpers.test.mjs && node --test scripts/flow-harness.test.mjs && node scripts/verify-gate.test.mjs && node --test scripts/gate.test.mjs && node --test scripts/web-search.test.ts && node --test scripts/threads.test.mjs && node --test scripts/prefetch.test.mjs && node --test scripts/post-run.test.mjs"
   }

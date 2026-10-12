@@ -29,7 +29,7 @@ how to test, and the open TODOs.
 - `lang-refs/` — per-language checklists reviewers pull with `cat`.
 - `.github/workflows/cc-review*.yml` — the GHA templates installed into consumer repos (review, interactive ping, cleanup). **Exception: `cc-review-memory-maintenance.yml` runs IN cc-review** (the memory branch lives here, so one job maintains every slice) — scheduled deterministic cleanup (no quota) + opt-in cross-repo `_global/` consolidation (one agent, `consolidate=true`, spends quota).
 - **Cross-repo `_global/` additive layer** — `_global/learnings/{lessons,watch-patterns}.md` on the memory branch, read by EVERY review (staged read-only into `.cc-global/` via `fetch_global`, never under `.cc-memory` so `push_slice` can't pollute a repo slice) so a lesson from repo A informs repo B. **Additive-only, never a global suppression** (one wrong suppression silences true findings in every repo). Written only by the maintenance job's consolidation pass.
-- `SPEC.md` / `README.md` — at the repo root (spec + human guide).
+- `SPEC.md` / `README.md` — at the repo root (spec + landing page); the human guide is `docs/guide.md`.
 - `docs/` — `overview-diagram-standard.md` (render-verified mermaid standard), `pipeline-diagram.html` (engine-internals viewer), `lessons-learned.md`, `github-review-api.md`, `learning-loop-plan.md` (honest assessment of the memory + the executable plan to make it actually learn — read before touching memory/gather; tracking #54/#24).
 
 ## Branch model — IMPORTANT

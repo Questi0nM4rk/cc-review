@@ -1,158 +1,92 @@
-<p align="center">
-  <h1 align="center">cc-review</h1>
-  <p align="center">
-    Automated, zero-tolerance PR/MR review powered by Claude Code.
-    <br />
-    <em>One self-contained workflow. Cost-tiered agents, dynamic depth, strict by construction.</em>
-  </p>
-</p>
+<div align="center">
 
-<p align="center">
-  <strong>No API billing</strong> — Claude Max OAuth token
-  &nbsp;&bull;&nbsp;
-  <strong>Bot identity</strong> — reviews from a GitHub App
-  &nbsp;&bull;&nbsp;
-  <strong>Self-contained</strong> — one workflow file, no marketplace/submodule
-</p>
+# `cc-review`
 
-> The canonical, exhaustive description lives in **[SPEC.md](SPEC.md)**. This README is the practical guide.
+**A pull request and merge request reviewer that runs Claude Code in GitHub Actions and posts as its own GitHub App.**
 
----
+[![license](https://img.shields.io/github/license/Questi0nM4rk/cc-review?color=blue)](./LICENSE)
+[![CI](https://github.com/Questi0nM4rk/cc-review/actions/workflows/ci.yml/badge.svg)](https://github.com/Questi0nM4rk/cc-review/actions/workflows/ci.yml)
 
-## What it does
+</div>
 
-On a **first review** it posts a **pre-review walkthrough** (business + technical summary, a mermaid diagram, a `Difficulty: N/5`), researches the web + its own memories/docs, runs a strict review, and posts **one atomic review**. On a **re-run** it re-checks its prior comments against the actual code, resolves what's genuinely fixed, and only re-reviews if the code changed significantly. It **approves only when there are zero findings and zero unresolved threads**.
+## Why it exists
 
-```
-PR event / @cc-review ping
-        │
-  GitHub Actions: clone bot, generate App token, run the workflow via an interactive claude session (coder/agentapi, not claude -p)
-        │
-  strict-review.mjs  (the whole brain) — first review vs re-run by the overview-comment marker
-   FIRST REVIEW
-     Holistic review (opus) ─ posts overview + difficulty ─┐ difficulty scales the rest
-     Gather (2 web-research agents + memories/docs + static tools)
-       → Squad (difficulty-scaled) → Dedup + Check (false-positive filter)
-       → Decide → Post → Memory
-   RE-RUN
-     all prior threads replied?  ─ no → "first finish prev review" (a @cc-review ping overrides)
-     yes → Comment-mgmt (resolve/reply) → significant change? → redraw overview in place + re-review · else done
-        │
-  One review (APPROVE / REQUEST_CHANGES) · threads resolved · memory + log branches updated
-```
+Most automated reviewers either flag everything with no judgement or bill per token through an API key.
+cc-review runs a real Claude Code session on a Claude subscription, and asks the model to review strictly: every finding is a required change, and the review approves only with zero findings and zero open threads.
+It refuses to be a service, a hosted product or a replacement for a human reviewer.
+It would have no reason to exist if a hosted reviewer gave the same strictness at no extra cost.
 
-## What a review looks like
+## Quickstart
 
-**1 — the overview comment** (posted first, edited in place on significant re-runs):
+The reviewer cannot run without these three things. There is no offline review mode.
 
-> <sub>`<!-- cc-review:overview -->`</sub>
-> **Difficulty: 3/5** — Adds a `/orders` endpoint that creates an order in Draft and submits it through the outbox dispatch chain.
-> ```mermaid
-> flowchart LR
->   A["POST /orders"] -->|"create"| B["OrderService"]
->   B -->|"enqueue"| C{"outbox dispatched?"}
->   C -->|"yes"| D["pricing-calculator"]
-> ```
-> Riskiest area: the synthetic `HttpContext` restoration in the outbox handler.
+- A Claude subscription and its OAuth token, stored as the secret `CLAUDE_CODE_OAUTH_TOKEN` (create it with `claude setup-token`).
+- A GitHub App you own, with permissions Contents, Pull requests and Issues (read and write) and Metadata (read). It is the review identity. Store its client ID as the secret `REVIEWER_APP_CLIENT_ID` and its private key as `REVIEWER_APP_PRIVATE_KEY`.
+- The App installed on the target repository and on this repository (the workflows clone this repository at run time).
 
-**2 — inline findings** (every finding is a required change — no severity labels, no "nits"):
-
-> **`src/OrdersController.cs:42`** — Validate `request.CustomerId > 0` before the lookup; an unset id currently reaches the repository and returns the first row.
-
-**3 — the verdict** — `REQUEST_CHANGES` until every thread is resolved and there are zero findings; otherwise `APPROVE`. On a re-run it replies `Fixed: …` / `Dismissed: …` on each prior thread first.
-
-## How review depth scales (token-efficient + pedantic)
-
-The holistic-review difficulty rating (1–5) deterministically picks the path:
-
-| Difficulty | Squad (opus·xhigh anchors + sonnet specialists) | Extra passes |
-|---|---|---|
-| 1 (trivial) | 1 opus | — |
-| 2 | 1 opus + 1 sonnet | gather, dedup + check |
-| 3 | 2 opus | gather, dedup + check |
-| 4 | 2 opus + 1 sonnet | gather, dedup + check |
-| 5 (hard) | 2 opus + 2 sonnet | gather, dedup + check |
-
-The opus reviewers are the top domains by a deterministic relevance score for the diff. "Gather" = the two web-research agents + memories/docs + static tools; "check" = the single false-positive-filter agent (it replaces the older separate grade + verify passes).
-
-## Configuration — `.cc-review.yaml`
-
-```yaml
-trigger: pr_open    # every_push | pr_open | disabled
-languages: [csharp, typescript]
-ignore_paths: ["docs/**", "**/*.md"]
-instructions: "Wolverine handles durable messaging — don't flag the queue indirection."
-known_patterns: ["Broad exception handlers in middleware are intentional."]
-```
-
-| `trigger` | Auto-reviews on |
-|---|---|
-| `every_push` | PR open **and** every push to the branch |
-| `pr_open` | PR open / reopen only (default) |
-| `disabled` | never — only the `@cc-review` ping |
-
-## Using it
-
-**Automatic** — per `trigger`.
-
-**`@cc-review` ping — ALWAYS available**, even when `trigger: disabled`:
-```
-@cc-review                                    review now — and override the re-review gate
-@cc-review what does this change do?          answer-only, no review
-```
-The only intent the message selects is **answer-only** (a question → a reply, no review). On a re-run it also **overrides** the "finish the previous review first" gate. It can never force an approval — the gate approves only on zero findings and zero unresolved threads, verified against the code.
-
-**Manual** — add the `cc-review` label, or `workflow_dispatch` with a PR number. The `no-review` label suppresses auto-runs.
-
-## Setup — GitHub (CI + App)
-
-*(GitLab is local-only — see [GitLab — local mode](#gitlab--local-mode) below.)*
-
-1. **Create the GitHub App** (`./scripts/setup.sh`) with permissions: Contents R/W, Pull requests R/W, Issues R/W, Metadata R. No webhook events are needed — the bot runs from your repo's own GitHub Actions (`pull_request` / `issue_comment`); the App only provides the review identity + token.
-2. **Install the App on All repositories** (account-wide — current & future repos) or, at minimum, your target repo *and* `Questi0nM4rk/cc-review` (so CI can clone the brain). *(No marketplace install — the bot is self-contained.)*
-3. **Add secrets** to the target repo: `CLAUDE_CODE_OAUTH_TOKEN`, `REVIEWER_APP_CLIENT_ID`, `REVIEWER_APP_PRIVATE_KEY`.
-4. **Copy the workflow files + config** into the target repo:
-   ```bash
-   ./scripts/install-to-repo.sh /path/to/your-repo
-   ```
-   That places `.github/workflows/cc-review.yml`, `cc-review-interactive.yml`, `cc-review-cleanup.yml`, and `.cc-review.yaml`.
-
-## Debugging — branches the bot writes
-
-| Branch | Where | Contents |
-|---|---|---|
-| `claude-reviewer/memory` | bot repo | per-project learnings: `MEMORY.md` + `learnings/{lessons,found-issues,known-patterns,decisions}.md`; and a tiny per-PR `<owner>/<repo>/pr-<N>/review-state.json` marker (head sha + file count) the significant-change check diffs against |
-| `pr-<N>-cc-review-output` | your repo | **ephemeral** per-PR run log (diff, session, result); gitleaks-scanned before push; auto-deleted when the PR closes |
-
-## GitLab — local mode
-
-The engine (brain + adapter) is shared; only the **entry point** differs by platform:
-
-| | How it runs | Posts as |
-|---|---|---|
-| **GitHub** | **CI** — install the workflows ([Setup](#setup--github-ci--app)); the App reviews on `pull_request` / `@cc-review` | the `cc-review` App |
-| **GitLab** | **local** — `scripts/run-gitlab.sh --mr <iid>`, from inside your repo clone | you (your `glab` creds) |
-
-There is no GitLab App or CI install (so it works where a CI bot app isn't allowed — e.g. corporate GitLab). Run from inside a clone of the GitLab repo:
+Then copy the workflows into the target repository:
 
 ```bash
-glab auth login --hostname gitlab.example.com   # once
-scripts/run-gitlab.sh --mr 42                    # review MR !42 and post to it
-scripts/run-gitlab.sh --mr 42 --dry-run          # review only, post nothing
-scripts/run-gitlab.sh --mr 42 --message "focus on the auth change"
+git clone https://github.com/Questi0nM4rk/cc-review && cd cc-review
+./scripts/install-to-repo.sh /path/to/your-repo
 ```
 
-The adapter auto-detects GitLab and uses `glab`; the review + walkthrough post to the MR, but **no branches are pushed**. Review memory stays **out of the product repo**, under `~/.claude/cc-review-memory/<repo-slug>/` (per-machine, never committed, and never the GitHub-CI memory branch — local and CI memory never cross). The runner **refuses to run on a GitHub repo** — use the CI workflows there. For a quick no-post smoke test on any diff (either platform), `scripts/run-local.sh` is the dry-run harness.
+Open a pull request in that repository, or comment `@cc-review` on one.
+`./scripts/setup.sh` creates the App for you. Details, GitLab and troubleshooting are in [docs/guide.md](docs/guide.md).
 
-## Troubleshooting
+Run the tests without any secret (Node 24):
 
-| Symptom | Check |
-|---|---|
-| Not reviewing | `trigger:` value; the 3 secrets; App installed on target **and** `cc-review` |
-| Can't approve | Unresolved threads remain — the gate refuses to approve until every thread is resolved |
-| Too noisy / missed something | Add to `known_patterns` / `instructions` in `.cc-review.yaml` |
-| Why did it flag X? | The `pr-<N>-cc-review-output` log branch (while the PR is open) — it holds the diff, session, and result for that run |
+```bash
+npm test
+# 258 pass + 7 pass, 0 fail
+```
 
----
+## How it works
 
-<p align="center"><sub>Built on <a href="https://claude.ai/code">Claude Code</a> — see <a href="SPEC.md">SPEC.md</a> for the full contract.</sub></p>
+```mermaid
+flowchart LR
+  A[PR event or @cc-review ping] --> B[GitHub Actions]
+  B --> C[Claude Code session]
+  C --> D[strict-review workflow]
+  D --> E[one review: APPROVE or REQUEST_CHANGES]
+  D --> F[memory branch]
+```
+
+A workflow file in the target repository starts a runner. The runner mints a GitHub App token, clones this repository, and drives an interactive Claude Code session through [coder/agentapi](https://github.com/coder/agentapi).
+The session runs `strict-review.mjs`: a first review posts an overview with a difficulty from 1 to 5, and the difficulty sets how many reviewer agents run. A re-run checks its earlier comments against the code and resolves the ones that are fixed.
+
+Deterministic: trigger and ignore rules, the difficulty-to-squad table, diff and thread fetching, the approval gate, secret scanning of run logs, and the post step.
+Calls a model: the overview, every reviewer, the web research agents, the false-positive filter and the comment replies.
+
+On GitLab the same engine runs locally with `scripts/run-gitlab.sh --mr <iid>` and posts as you.
+The full contract is in [SPEC.md](SPEC.md).
+
+## Numbers
+
+Measured 2026-10-12 on Arch Linux, Node 24.14.1.
+
+| What | Value | How measured |
+| --- | --- | --- |
+| Tests | 265 pass, 0 fail (258 + 7) | `npm test` |
+| Test time | about 31 s wall | `time npm test` |
+| Source size | 5486 code lines, 38 files | `scc --no-cocomo scripts` |
+| Review quality | not measured | no benchmark exists |
+
+Commits include agent-authored work under my identity; design, orchestration and review are mine.
+
+## Status
+
+- **Works:** GitHub review through the App on pull requests, `@cc-review` pings and labels, re-runs that resolve fixed threads, a per-project `.cc-review.yaml`, a local GitLab runner.
+- **Experimental:** the learning memory. It stores notes per project on the `claude-reviewer/memory` branch and is a noise filter more than a learner ([docs/learning-loop-plan.md](docs/learning-loop-plan.md)).
+- **Known gaps:**
+  - It needs a Claude subscription and a GitHub App. There is no API-key mode.
+  - Cost is not measured. A run uses a share of the subscription's weekly quota.
+  - `ci.yml` runs a subset of `npm test`.
+  - GitLab has no CI mode and posts under your account.
+  - The memory branch lives in the repository that runs the bot. Use a private fork if you review private code.
+
+Reference: [guide](docs/guide.md), [spec](SPEC.md), [GitHub review API notes](docs/github-review-api.md), [lessons learned](docs/lessons-learned.md).
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).
