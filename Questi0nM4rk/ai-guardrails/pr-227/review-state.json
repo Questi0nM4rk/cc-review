@@ -1,0 +1,10 @@
+{
+  "reviewed_head_sha": "fa1f20e89faf5da59afb1213021356dc24b1f259",
+  "reviewed_file_count": 1,
+  "event": "APPROVE",
+  "files": [
+    ".github/workflows/release.yml"
+  ],
+  "reviewed_difficulty": 3,
+  "reviewed_category": "chore"
+}
