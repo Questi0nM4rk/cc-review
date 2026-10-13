@@ -1,0 +1,11 @@
+{
+  "reviewed_head_sha": "9cef692304f97ad18295f52627bf948e0b8cdcfa",
+  "reviewed_file_count": 2,
+  "event": "APPROVE",
+  "files": [
+    ".github/workflows/release.yml",
+    "README.md"
+  ],
+  "reviewed_difficulty": 3,
+  "reviewed_category": "chore"
+}
