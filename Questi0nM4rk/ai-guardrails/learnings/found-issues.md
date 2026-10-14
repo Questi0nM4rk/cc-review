@@ -17,3 +17,6 @@
 
 ## .github/workflows/check.yml
 - `Publish badges` step grants `permissions: contents: write` at workflow scope; move it into a separate job with `needs: test` and scope the write permission to that job alone — the current placement elevates write access for the entire workflow unnecessarily. (.github/workflows/check.yml:46)
+
+## .github/workflows/release.yml
+- Pin `npm` to an exact version instead of the `^11.15.0` caret range — the caret resolves to the latest npm 11.x at run time, making the release pipeline non-reproducible. (.github/workflows/release.yml:91)

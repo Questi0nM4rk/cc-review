@@ -36,3 +36,6 @@
 
 ## CI Permission Scoping
 - Scope `permissions: contents: write` (or any elevated permission) to the smallest possible job — use a dedicated job with `needs:` for steps like badge publishing rather than granting the permission to the whole workflow. Least-privilege is a first-class CI correctness concern, not a nitpick.
+
+## CI Tool Version Pinning
+- Pin tool versions installed inside CI steps (npm, pip, etc.) to an exact version, not a caret or tilde range — a caret resolves to the latest patch/minor at run time, making release pipelines non-reproducible.
